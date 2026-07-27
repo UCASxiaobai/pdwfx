@@ -1,0 +1,70 @@
+server:
+  port: 18080
+  tomcat:
+    connection-timeout: 3600000
+    keep-alive-timeout: 3600000
+
+signal-analysis:
+  max-sessions: 256
+
+spring:
+  application:
+    name: signal-analysis
+  servlet:
+    multipart:
+      max-file-size: 512MB
+      max-request-size: 512MB
+
+# bearing-scene-finder（方位场景发现）
+scene-finder:
+  frame-seconds: 0.5
+  bearing-cluster-gap-deg: 4.0
+  association-gate-deg: 6.0
+  max-missed-frames: 2
+  min-track-seconds: 30.0
+  min-track-points: 20
+  max-track-bearing-rate-deg-per-sec: 12.0
+  track-jump-split-deg-per-sec: 14.0
+  track-jump-split-gap-sec: 4.0
+  window-seconds: 120.0
+  window-step-seconds: 30.0
+  min-tracks-in-scene: 1
+  top-k-track-scenes: 50
+  top-k-polling-scenes: 50
+  top-k-scenes: 50
+  min-separation-deg: 3.0
+  freq-min: 200
+  freq-max: 1000
+  freq-cluster-gap-mhz: 0.01
+  scene-freq-band-gap-mhz: 0.01
+  merge-max-gap-seconds: 30
+  polling-burst-coalesce-sec: 0.5
+  polling-burst-bearing-gap-deg: 0.5
+  polling-min-bearings-per-burst: 2
+  polling-min-inter-cluster-separation-deg: 1.0
+  polling-min-aligned-multi-bursts: 5
+  polling-min-stable-bearing-slots: 2
+  polling-max-slot-bearing-std-deg: 1.5
+  polling-min-burst-bearing-span-deg: 0
+  polling-max-dominant-cluster-fraction: 0.72
+  polling-window-seconds: 90.0
+  polling-window-step-seconds: 20.0
+  polling-min-bursts-in-window: 5
+  polling-period-min-sec: 5.0
+  polling-period-max-sec: 20.0
+  polling-period-tolerance-ratio: 0.18
+  polling-min-periodicity-score: 0.55
+  scene-fusion-overlap-suppress-ratio: 0.92
+  max-visualization-scatter-points: 6000
+  inline-visualization-max-detections: 200000
+  enable-import-scatter: false
+  output-dir: ./output
+
+# 场景转发信号分析：合并后默认进程内调用，无需单独 18080 服务
+pdwfx:
+  backend:
+    in-process: true
+    base-url: http://localhost:18080
+    default-freq-tolerance: 0.01
+    connect-timeout-seconds: 30
+    read-timeout-seconds: 600
