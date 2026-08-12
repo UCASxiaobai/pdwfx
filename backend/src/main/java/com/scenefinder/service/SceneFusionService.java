@@ -18,7 +18,8 @@ import java.util.TreeSet;
 import java.util.stream.Collectors;
 
 /**
- * 融合两类场景：轨迹与轮询各自按分项 Top-K 选取，再合并时间重合的同类型场景，最后统一排名输出。
+ * 融合两类场景：轨迹与轮询各自按分项 Top-K 选取，再合并时间重合的同类型场景；
+ * 最终排名：轮询场景在前（按 score 降序），连续轨迹在后（按 score 降序）。
  */
 @Service
 public class SceneFusionService {
@@ -47,14 +48,15 @@ public class SceneFusionService {
                 )
         );
 
-        List<QualityScene> combined = new ArrayList<>(selectedTracks.size() + selectedPolling.size());
-        combined.addAll(selectedTracks);
-        combined.addAll(selectedPolling);
-        combined.sort(Comparator.comparingDouble(QualityScene::getScore).reversed());
+        selectedPolling.sort(Comparator.comparingDouble(QualityScene::getScore).reversed());
+        selectedTracks.sort(Comparator.comparingDouble(QualityScene::getScore).reversed());
 
-        List<QualityScene> ranked = new ArrayList<>();
+        List<QualityScene> ranked = new ArrayList<>(selectedPolling.size() + selectedTracks.size());
         int rank = 1;
-        for (QualityScene scene : combined) {
+        for (QualityScene scene : selectedPolling) {
+            ranked.add(replaceRank(scene, rank++));
+        }
+        for (QualityScene scene : selectedTracks) {
             ranked.add(replaceRank(scene, rank++));
         }
         return ranked;

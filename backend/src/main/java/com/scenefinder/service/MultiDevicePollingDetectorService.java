@@ -121,24 +121,24 @@ public class MultiDevicePollingDetectorService {
                 .map(p -> BearingMath.normalize360(p.getBearingDeg()))
                 .collect(Collectors.toList());
 
-        double mergeGapDeg = props.getPollingBurstBearingGapDeg();
-        int concurrentDevices = BearingMath.countBearingClusters(bearings, mergeGapDeg);
+        double duplicateMergeDeg = PollingBurstClustering.duplicateMergeDeg(props);
+        int concurrentDevices = BearingMath.countBearingClusters(bearings, duplicateMergeDeg);
         if (concurrentDevices < props.getPollingMinBearingsPerBurst()) {
             return null;
         }
 
-        double span = bearingSpanDeg(bearings, mergeGapDeg);
+        double span = bearingSpanDeg(bearings, duplicateMergeDeg);
         double minSpanDeg = props.getPollingMinBurstBearingSpanDeg();
         if (minSpanDeg > 0 && span < minSpanDeg) {
             return null;
         }
 
-        double dominantFraction = BearingMath.largestClusterFraction(bearings, mergeGapDeg);
+        double dominantFraction = BearingMath.largestClusterFraction(bearings, duplicateMergeDeg);
         if (dominantFraction > props.getPollingMaxDominantClusterFraction()) {
             return null;
         }
 
-        List<Double> clusterCenters = BearingMath.clusterCenters(bearings, mergeGapDeg);
+        List<Double> clusterCenters = BearingMath.clusterCenters(bearings, duplicateMergeDeg);
         if (!passesInterClusterSeparation(clusterCenters, props.getPollingMinInterClusterSeparationDeg())) {
             return null;
         }
@@ -174,20 +174,48 @@ public class MultiDevicePollingDetectorService {
         return minPair >= minSepDeg || span >= minSepDeg * 1.5;
     }
 
-    /** 周期多点位共现：对齐轮次 + 稳定方位槽位均达标。 */
+    /** 周期多点位共现：整窗网格对齐轮次 + 稳定方位槽位均达标。 */
     private boolean validatePeriodicMultiPointPattern(
-            List<MultiBearingBurst> inWindow,
-            PeriodEstimate period,
+            List<MultiBearingBurst> alignedRun,
             SceneFinderProperties props
     ) {
-        if (inWindow.size() < props.getPollingMinAlignedMultiBursts()) {
-            return false;
-        }
-        List<MultiBearingBurst> alignedRun = pickBestAlignedRun(inWindow, period.getPeriodSec(), props);
         if (alignedRun.size() < props.getPollingMinAlignedMultiBursts()) {
             return false;
         }
         return countStableBearingSlots(alignedRun, props) >= props.getPollingMinStableBearingSlots();
+    }
+
+    /** 按评分时间窗起止与周期，将 burst 对齐到整窗网格。 */
+    private List<MultiBearingBurst> alignMultiBurstsToWindow(
+            List<MultiBearingBurst> bursts,
+            Instant windowStart,
+            Instant windowEnd,
+            double periodSec,
+            SceneFinderProperties props
+    ) {
+        if (bursts.isEmpty() || periodSec <= 0) {
+            return Collections.emptyList();
+        }
+        long periodMs = Math.max(1, Math.round(periodSec * 1000.0));
+        double tolMs = periodSec * props.getPollingPeriodToleranceRatio() * 1000.0;
+        long startMs = windowStart.toEpochMilli();
+        long endMs = windowEnd.toEpochMilli();
+
+        List<MultiBearingBurst> sorted = bursts.stream()
+                .sorted(Comparator.comparing(MultiBearingBurst::getCenterTime))
+                .collect(Collectors.toList());
+
+        List<MultiBearingBurst> aligned = new ArrayList<>();
+        Set<MultiBearingBurst> used = new HashSet<>();
+        for (long targetMs = startMs; targetMs <= endMs + tolMs; targetMs += periodMs) {
+            MultiBearingBurst hit = findBurstNear(sorted, targetMs, tolMs, used);
+            if (hit != null) {
+                aligned.add(hit);
+                used.add(hit);
+            }
+        }
+
+        return aligned;
     }
 
     private List<MultiBearingBurst> pickBestAlignedRun(
@@ -269,7 +297,8 @@ public class MultiDevicePollingDetectorService {
         }
         double matchDeg = Math.max(2.0, props.getPollingMinInterClusterSeparationDeg());
         double maxStd = props.getPollingMaxSlotBearingStdDeg();
-        int minHits = Math.max(2, (int) Math.ceil(alignedRun.size() * 0.7));
+        int minHits = PollingAlignmentUtil.minRoundHits(
+                alignedRun.size(), props.getPollingMinSlotRoundCoverageRatio());
 
         List<Double> seedSlots = new ArrayList<>(alignedRun.get(0).getMetrics().getClusterCenters());
         seedSlots.sort(Double::compareTo);
@@ -391,30 +420,32 @@ public class MultiDevicePollingDetectorService {
             if (period == null) {
                 continue;
             }
-            if (!validatePeriodicMultiPointPattern(inWindow, period, props)) {
+            List<MultiBearingBurst> gridAligned = alignMultiBurstsToWindow(
+                    inWindow, windowStart, windowEnd, period.getPeriodSec(), props);
+            if (!validatePeriodicMultiPointPattern(gridAligned, props)) {
                 continue;
             }
 
-            List<Double> spans = inWindow.stream().map(b -> b.getMetrics().getBearingSpanDeg()).sorted().collect(Collectors.toList());
+            List<Double> spans = gridAligned.stream().map(b -> b.getMetrics().getBearingSpanDeg()).sorted().collect(Collectors.toList());
             double medianSpan = spans.get(spans.size() / 2);
-            double avgBearings = inWindow.stream().mapToInt(b -> b.getMetrics().getBearingClusterCount()).average().orElse(0);
+            double avgBearings = gridAligned.stream().mapToInt(b -> b.getMetrics().getBearingClusterCount()).average().orElse(0);
             int typicalBearings = (int) Math.round(avgBearings);
 
-            double burstBonus = Math.min(inWindow.size() / (double) props.getPollingMinBurstsInWindow(), 2.5);
+            double burstBonus = Math.min(gridAligned.size() / (double) props.getPollingMinBurstsInWindow(), 2.5);
             double periodBonus = period.getPeriodicityScore() * 2.0;
             double spanBonus = Math.min(medianSpan / 30.0, 1.5);
             double bearingBonus = Math.min(typicalBearings / 4.0, 1.5);
             double score = 2.0 * burstBonus + periodBonus + spanBonus + bearingBonus;
 
-            double freqCenter = inWindow.stream().mapToDouble(b -> b.getMetrics().getFreqCenterMhz()).average().orElse(0);
-            double freqMin = inWindow.stream().mapToDouble(b -> b.getMetrics().getFreqMinMhz()).min().orElse(0);
-            double freqMax = inWindow.stream().mapToDouble(b -> b.getMetrics().getFreqMaxMhz()).max().orElse(0);
+            double freqCenter = gridAligned.stream().mapToDouble(b -> b.getMetrics().getFreqCenterMhz()).average().orElse(0);
+            double freqMin = gridAligned.stream().mapToDouble(b -> b.getMetrics().getFreqMinMhz()).min().orElse(0);
+            double freqMax = gridAligned.stream().mapToDouble(b -> b.getMetrics().getFreqMaxMhz()).max().orElse(0);
 
             scored.add(new ScoredPollingWindow(
                     windowStart,
                     windowEnd,
                     score,
-                    inWindow.size(),
+                    gridAligned.size(),
                     medianSpan,
                     period.getPeriodSec(),
                     avgBearings,
@@ -423,7 +454,7 @@ public class MultiDevicePollingDetectorService {
                     freqCenter,
                     freqMin,
                     freqMax,
-                    inWindow
+                    gridAligned
             ));
         }
         return scored;

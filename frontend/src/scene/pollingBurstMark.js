@@ -27,7 +27,7 @@ export function detectFirstPollingBurst(allPoints, options = {}) {
   const opts = { ...DEFAULT_OPTS, ...options };
   const minDevices = Math.max(2, Math.round(Number(opts.minDevices) || 2));
   const coalesceMs = Math.max(1, opts.burstCoalesceSec * 1000);
-  const gap = opts.bearingGapDeg;
+  const gap = Math.min(opts.bearingGapDeg ?? 0.5, 0.12);
 
   const rows = (allPoints || [])
     .filter((p) => p && Number.isFinite(p[0]) && p[1] != null && Number.isFinite(p[1]))

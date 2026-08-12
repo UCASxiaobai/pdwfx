@@ -11,6 +11,86 @@ export function sceneTypeLabel(t) {
   return t || "—";
 }
 
+export function isPollingSceneType(sceneType) {
+  return sceneType === "MULTI_DEVICE_POLLING" || sceneType === "POLLING_MULTI_DEVICE";
+}
+
+/** 展示顺序：严格按预筛选序号（rank）升序，信号分析后也不重排类型 */
+export function compareScenesForDisplay(a, b) {
+  const rankA = Number(a.rank ?? a.sceneRank ?? 0);
+  const rankB = Number(b.rank ?? b.sceneRank ?? 0);
+  return rankA - rankB;
+}
+
+export function sortScenesForDisplay(list) {
+  return [...(list || [])].sort(compareScenesForDisplay);
+}
+
+/**
+ * 各可视化面板统一的场景 Tab 列表（按预筛选 rank 升序）。
+ * @param {object} [opts]
+ * @param {Set<number>} [opts.allowedRanks] 仅保留这些 rank
+ * @param {Set<number>} [opts.requireAnalyzedRanks] 仅保留已完成信号分析的 rank
+ */
+export function buildDisplaySceneTabs(scenes, opts = {}) {
+  const { allowedRanks = null, requireAnalyzedRanks = null } = opts;
+  let list = (scenes || []).map((s) => ({
+    rank: Number(s.rank ?? s.sceneRank),
+    sceneType: s.sceneType
+  }));
+  if (allowedRanks?.size) {
+    list = list.filter((t) => allowedRanks.has(t.rank));
+  }
+  if (requireAnalyzedRanks?.size) {
+    list = list.filter((t) => requireAnalyzedRanks.has(t.rank));
+  }
+  return sortScenesForDisplay(list);
+}
+
+/** 按统一 Tab 顺序重排轨迹视图，保证与 buildDisplaySceneTabs 一一对应。 */
+export function alignTrajectoryViewsToSceneTabs(trajectoryViews, sceneTabs) {
+  const byRank = new Map();
+  for (const v of trajectoryViews || []) {
+    const rank = Number(v?.sceneRank);
+    if (Number.isFinite(rank)) byRank.set(rank, v);
+  }
+  return (sceneTabs || [])
+    .map((t) => {
+      const rank = Number(t.rank);
+      const view = byRank.get(rank);
+      if (!view) return null;
+      return { ...view, sceneRank: rank, sceneType: t.sceneType };
+    })
+    .filter(Boolean);
+}
+
+/** 轨迹视图按 sceneRank 索引（与 buildDisplaySceneTabs 配合）。 */
+export function trajectoryViewsByRank(trajectoryViews) {
+  const map = new Map();
+  for (const v of trajectoryViews || []) {
+    const rank = Number(v?.sceneRank);
+    if (Number.isFinite(rank)) map.set(rank, v);
+  }
+  return map;
+}
+
+export function filterTrajectoryViews(visualization, allowedRanks, scenes = []) {
+  if (!allowedRanks?.size) return [];
+  const tabs = buildDisplaySceneTabs(scenes, { allowedRanks });
+  const views = (visualization?.trajectoryViews || []).filter((v) =>
+    allowedRanks.has(Number(v.sceneRank))
+  );
+  return alignTrajectoryViewsToSceneTabs(views, tabs);
+}
+
+function compareTrajectoryViewsForDisplay(a, b) {
+  return Number(a.sceneRank ?? 0) - Number(b.sceneRank ?? 0);
+}
+
+export function sortTrajectoryViewsForDisplay(list) {
+  return [...(list || [])].sort(compareTrajectoryViewsForDisplay);
+}
+
 /** 场景筛选/表格合并列：#1 轮询 */
 export function formatSceneLabel(rank, sceneType) {
   return `#${rank} ${sceneTypeLabel(sceneType)}`;
@@ -91,12 +171,7 @@ export function filterScenes(scenes, filters, reportSceneRanks) {
   return list;
 }
 
-export function filterTrajectoryViews(visualization, allowedRanks) {
-  const views = visualization?.trajectoryViews || [];
-  if (!allowedRanks || !allowedRanks.size) return [];
-  return views.filter((v) => allowedRanks.has(v.sceneRank));
-}
-
+/** 按结果筛选条件过滤报表行（结果表格用） */
 export function filterReportRows(rows, filters) {
   let list = rows || [];
   if (filters.sceneRank) {

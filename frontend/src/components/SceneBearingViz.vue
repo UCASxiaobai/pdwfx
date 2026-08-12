@@ -2,28 +2,29 @@
   <div class="bearing-viz">
     <div class="viz-head">
       <h4>场景方位轨迹</h4>
-      <span class="viz-meta">{{ views.length }} 个场景 · 检测 {{ summary.detections }} · 轨迹 {{ summary.tracks }}</span>
+      <span class="viz-meta">{{ sceneTabs.length }} 个场景 · 检测 {{ summary.detections }} · 轨迹 {{ summary.tracks }}</span>
     </div>
-    <div v-if="!views.length" class="viz-empty">当前筛选条件下无场景轨迹可显示</div>
+    <div v-if="!sceneTabs.length" class="viz-empty">当前筛选条件下无场景轨迹可显示</div>
     <template v-else>
       <div class="scene-tabs">
         <button
-          v-for="(v, idx) in views"
-          :key="v.sceneRank"
+          v-for="tab in sceneTabs"
+          :key="tab.rank"
           type="button"
           class="tab"
-          :class="{ active: idx === activeIdx }"
-          @click="activeIdx = idx"
+          :class="{ active: tab.rank === activeRank }"
+          @click="selectTab(tab.rank)"
         >
-          {{ tabLabel(v) }}
+          {{ formatSceneLabel(tab.rank, tab.sceneType) }}
         </button>
       </div>
       <div class="panel">
         <div class="panel-title">
-          <strong>{{ current?.title || "—" }}</strong>
+          <strong>{{ current?.title || panelTitleFallback }}</strong>
           <span>{{ panelMeta }}</span>
         </div>
-        <div ref="chartEl" class="chart-box" />
+        <div v-if="!current" class="viz-empty inline">该场景暂无预筛轨迹数据</div>
+        <div v-else ref="chartEl" class="chart-box" />
         <p v-if="current?.dateLabel" class="date-foot">{{ current.dateLabel }}</p>
         <p v-if="current?.note" class="scene-note">{{ current.note }}</p>
         <p class="hint">{{ chartHint }}</p>
@@ -36,24 +37,60 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import * as echarts from "echarts";
 import { formatPeriodSecMsUs } from "../scene/sceneFormat.js";
+import { formatSceneLabel } from "../scene/sceneFilters.js";
 
 const props = defineProps({
-  views: { type: Array, default: () => [] },
+  sceneTabs: { type: Array, default: () => [] },
+  trajectoryViews: { type: Array, default: () => [] },
+  activeRank: { type: Number, default: null },
   summary: {
     type: Object,
     default: () => ({ detections: 0, tracks: 0 })
   }
 });
 
+const emit = defineEmits(["update:activeRank"]);
+
 const chartEl = ref(null);
-const activeIdx = ref(0);
 let chartInst = null;
 
-const current = computed(() => props.views[activeIdx.value] || null);
+const viewByRank = computed(() => {
+  const map = new Map();
+  for (const v of props.trajectoryViews || []) {
+    if (v?.sceneRank == null) continue;
+    const rank = Number(v.sceneRank);
+    if (!Number.isFinite(rank)) continue;
+    const tab = props.sceneTabs.find((t) => Number(t.rank) === rank);
+    map.set(rank, tab ? { ...v, sceneRank: rank, sceneType: tab.sceneType } : { ...v, sceneRank: rank });
+  }
+  return map;
+});
+
+const current = computed(() => {
+  const want = Number(props.activeRank);
+  if (!Number.isFinite(want)) return null;
+  return viewByRank.value.get(want) || null;
+});
+
+const currentTab = computed(() => {
+  const want = Number(props.activeRank);
+  if (!Number.isFinite(want)) return null;
+  return props.sceneTabs.find((t) => Number(t.rank) === want) || null;
+});
+
+const panelTitleFallback = computed(() => {
+  const tab = currentTab.value;
+  if (!tab) return "—";
+  return `场景 #${tab.rank}`;
+});
+
+function selectTab(rank) {
+  emit("update:activeRank", rank);
+}
 
 const panelMeta = computed(() => {
   const v = current.value;
-  if (!v) return "";
+  if (!v) return currentTab.value ? "预筛轨迹数据缺失" : "";
   if (v.viewMode === "polling") {
     const total = v.scatterTotal ?? v.displayedTracks;
     const down = v.scatterDownsampled ? `（抽样显示 ${v.displayedTracks}/${total}）` : "";
@@ -71,7 +108,7 @@ const panelMeta = computed(() => {
 
 const chartHint = computed(() => {
   const v = current.value;
-  if (!v) return "";
+  if (!v) return "与下方「信号分析方位轨迹」共用场景 Tab；此处为预筛散点/轨迹。";
   if (v.viewMode === "polling") {
     return v.pollingParticipantsOnly
       ? "仅显示已识别轮询目标的 burst 点位（按目标分色）。"
@@ -81,24 +118,12 @@ const chartHint = computed(() => {
 });
 
 watch(
-  () => props.views,
-  (list) => {
-    if (activeIdx.value >= list.length) activeIdx.value = 0;
+  () => [props.activeRank, props.trajectoryViews, props.sceneTabs],
+  () => {
     renderChart();
   },
   { deep: true }
 );
-
-watch(activeIdx, () => renderChart());
-
-function tabLabel(v) {
-  const tag = v.viewMode === "polling" ? "轮询" : "轨迹";
-  return `#${v.sceneRank} ${tag}`;
-}
-
-function formatClock(ms) {
-  return new Date(ms).toLocaleTimeString("zh-CN", { hour12: false });
-}
 
 function renderChart() {
   if (!chartEl.value || !current.value) {
@@ -192,9 +217,8 @@ function buildPollingOption(v) {
         return `${formatClock(p.value[0])}<br/>${p.seriesName}: ${Number(p.value[1]).toFixed(1)}°`;
       }
     },
-    legend: { top: 4, right: 8, type: targets ? "scroll" : "plain" },
-    grid: { left: 56, right: 16, top: 40, bottom: 56 },
-    graphic: graphics,
+    legend: { top: 4, right: 8, type: "scroll" },
+    grid: { left: 56, right: 16, top: 40, bottom: ann.periodSec ? 72 : 48 },
     xAxis: {
       type: "value",
       min: v.xMin,
@@ -208,8 +232,13 @@ function buildPollingOption(v) {
       max: v.yMax,
       name: "方位 (°)"
     },
+    graphic: graphics,
     series
   };
+}
+
+function formatClock(ms) {
+  return new Date(ms).toLocaleTimeString("zh-CN", { hour12: false });
 }
 
 function onResize() {
@@ -229,25 +258,17 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.bearing-viz {
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid #e5e7eb;
-}
+.bearing-viz { margin-top: 0; }
 .viz-head {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  margin-bottom: 8px;
-}
-.viz-head h4 { margin: 0; font-size: 14px; color: #111827; }
-.viz-meta { font-size: 12px; color: #6b7280; }
-.scene-tabs {
-  display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  align-items: baseline;
+  gap: 8px;
   margin-bottom: 8px;
 }
+.viz-head h4 { margin: 0; font-size: 14px; }
+.viz-meta { font-size: 12px; color: #6b7280; }
+.scene-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .tab {
   border: 1px solid #d1d5db;
   background: #fff;
@@ -256,12 +277,7 @@ onBeforeUnmount(() => {
   font-size: 12px;
   cursor: pointer;
 }
-.tab.active {
-  border-color: #2563eb;
-  color: #1d4ed8;
-  font-weight: 600;
-  background: #eff6ff;
-}
+.tab.active { border-color: #2563eb; color: #1d4ed8; font-weight: 600; background: #eff6ff; }
 .panel {
   background: #fff;
   border: 1px solid #d1d5db;
@@ -270,32 +286,23 @@ onBeforeUnmount(() => {
 }
 .panel-title {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
-  gap: 12px;
-  font-size: 12px;
-  color: #4b5563;
+  gap: 8px;
   margin-bottom: 6px;
-}
-.panel-title strong { color: #111827; font-size: 13px; }
-.chart-box { height: 420px; width: 100%; }
-.date-foot { text-align: right; font-size: 11px; color: #6b7280; margin: 4px 0 0; }
-.scene-note {
   font-size: 12px;
-  color: #374151;
-  background: #fffde7;
-  border: 1px solid #e6d98a;
-  padding: 6px 8px;
-  border-radius: 4px;
-  margin: 8px 0 0;
-  line-height: 1.45;
 }
+.panel-title strong { font-size: 13px; color: #111827; }
+.chart-box { width: 100%; height: 360px; }
+.date-foot { text-align: right; font-size: 11px; color: #6b7280; margin: 4px 0 0; }
+.scene-note { font-size: 11px; color: #4b5563; margin: 4px 0 0; }
 .hint { font-size: 11px; color: #6b7280; margin: 8px 0 0; }
 .viz-empty {
   padding: 24px;
   text-align: center;
   color: #9ca3af;
-  font-size: 13px;
   background: #f9fafb;
   border-radius: 8px;
 }
+.viz-empty.inline { padding: 16px; margin-bottom: 8px; }
 </style>

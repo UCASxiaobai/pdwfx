@@ -108,7 +108,7 @@
       </p>
       <div class="scene-chips">
         <label
-          v-for="s in sceneResult.scenes"
+          v-for="s in displayScenes"
           :key="s.rank"
           class="chip"
           :class="{ on: selectedRanks.includes(s.rank) }"
@@ -163,7 +163,7 @@ import ImportDataScatterViz from "./ImportDataScatterViz.vue";
 import SceneDfMatchPanel from "./SceneDfMatchPanel.vue";
 import { analyzeScenesUpload, fetchVisualizationData, processScenesPipeline } from "../scene/sceneApi.js";
 import { clearAnalysisViewCache } from "../scene/analysisViewCache.js";
-import { formatFreq, sceneTypeLabel } from "../scene/sceneFilters.js";
+import { formatFreq, sceneTypeLabel, sortScenesForDisplay } from "../scene/sceneFilters.js";
 
 const pickedFiles = ref([]);
 const params = reactive({
@@ -201,9 +201,13 @@ let abortController = null;
 let importAbort = null;
 
 const allScenesSelected = computed(() => {
-  const n = sceneResult.value?.scenes?.length || 0;
+  const n = displayScenes.value.length;
   return n > 0 && selectedRanks.value.length === n;
 });
+
+const displayScenes = computed(() =>
+  sortScenesForDisplay(sceneResult.value?.scenes || [])
+);
 
 const canReForward = computed(
   () =>
@@ -288,7 +292,7 @@ async function runSceneScreeningForViz() {
       importAbort.signal
     );
     sceneResult.value = result;
-    selectedRanks.value = (result.scenes || []).map((s) => s.rank);
+    selectedRanks.value = sortScenesForDisplay(result.scenes || []).map((s) => s.rank);
     await loadImportScatter(result);
     statusMsg.value = result.scenes?.length
       ? `已标绘全量散点 · 筛出 ${result.scenes.length} 个优质场景`
@@ -386,7 +390,7 @@ async function runForwardAndReport(signal) {
       {
         sourceCsvPath: sceneResult.value.sourceCsv,
         outputDir: sceneResult.value.outputDir,
-        sceneRanks: [...selectedRanks.value],
+        sceneRanks: [...selectedRanks.value].map(Number).sort((a, b) => a - b),
         freqTolerance: params.freqTolerance,
         preloadAll: params.preloadAll
       },
@@ -404,7 +408,7 @@ async function runForwardAndReport(signal) {
         }
       }
     );
-    forwardItems.value = summary.forwardItems;
+    forwardItems.value = sortScenesForDisplay(summary.forwardItems || []);
     forwardResult.value = {
       sourceCsv: sceneResult.value.sourceCsv,
       outputDir: sceneResult.value.outputDir,

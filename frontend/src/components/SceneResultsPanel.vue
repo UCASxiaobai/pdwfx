@@ -60,16 +60,20 @@
       <p v-if="vizLoading" class="viz-hint">正在加载场景方位轨迹数据…</p>
       <SceneBearingViz
         v-else-if="visualizationPayload"
-        :views="bearingViews"
+        v-model:active-rank="activeBearingSceneRank"
+        :scene-tabs="unifiedSceneTabs"
+        :trajectory-views="alignedTrajectoryViews"
         :summary="bearingSummary"
       />
       <p v-else-if="sceneResult?.scenes?.length && vizError" class="viz-hint">{{ vizError }}</p>
 
       <SceneAnalysisBearingViz
         v-if="showAnalysisBearing"
+        v-model:active-rank="activeBearingSceneRank"
+        :scene-tabs="unifiedSceneTabs"
         :forward-items="forwardItems"
         :scene-result="sceneResult"
-        :allowed-ranks="bearingAllowedRanks"
+        :report-rows="allRows"
       />
 
       <SceneCrossFreqMatchViz
@@ -176,11 +180,13 @@ import SceneResultsCharts from "./SceneResultsCharts.vue";
 import {
   TARGET_TYPE_OPTIONS,
   aggregateStats,
+  alignTrajectoryViewsToSceneTabs,
   filterReportRows,
   filterScenes,
-  filterTrajectoryViews,
+  buildDisplaySceneTabs,
   formatFreq,
   formatSceneLabel,
+  sortScenesForDisplay,
   targetTypeLabel,
   uniqueCommLinks
 } from "../scene/sceneFilters.js";
@@ -207,6 +213,7 @@ const vizError = ref("");
 let vizAbort = null;
 const page = ref(1);
 const pageSize = 50;
+const activeBearingSceneRank = ref(null);
 
 const localFilters = reactive({
   sceneRank: "",
@@ -230,19 +237,60 @@ const showAnalysisBearing = computed(
 
 const filteredRows = computed(() => filterReportRows(allRows.value, localFilters));
 
+const analyzedRanks = computed(() => {
+  const set = new Set();
+  for (const item of props.forwardItems || []) {
+    const r = Number(item.rank);
+    if (Number.isFinite(r)) set.add(r);
+  }
+  return set;
+});
+
 const bearingAllowedRanks = computed(() => {
   const scenes = filterScenes(props.sceneResult?.scenes || [], localFilters, null);
-  let ranks = new Set(scenes.map((s) => s.rank));
+  let ranks = new Set(scenes.map((s) => Number(s.rank)).filter(Number.isFinite));
+  // 信号分析完成后：上下图与明细表只展示本次分析过的预筛选序号
+  if (analyzedRanks.value.size) {
+    ranks = new Set([...ranks].filter((r) => analyzedRanks.value.has(r)));
+  }
   const hasSignalFilter = localFilters.targetType || localFilters.commLink;
   if (hasSignalFilter && allRows.value.length) {
-    const fromReport = new Set(filteredRows.value.map((r) => r.sceneRank));
+    const fromReport = new Set(
+      filteredRows.value.map((r) => Number(r.sceneRank)).filter(Number.isFinite)
+    );
     ranks = new Set([...ranks].filter((r) => fromReport.has(r)));
   }
   return ranks;
 });
 
-const bearingViews = computed(() =>
-  filterTrajectoryViews(visualizationPayload.value, bearingAllowedRanks.value)
+const unifiedSceneTabs = computed(() =>
+  buildDisplaySceneTabs(props.sceneResult?.scenes || [], {
+    allowedRanks: bearingAllowedRanks.value,
+    requireAnalyzedRanks: analyzedRanks.value.size ? analyzedRanks.value : null
+  })
+);
+
+/** 预筛轨迹图与 Tab 按同一预筛选序号对齐 */
+const alignedTrajectoryViews = computed(() =>
+  alignTrajectoryViewsToSceneTabs(
+    visualizationPayload.value?.trajectoryViews || [],
+    unifiedSceneTabs.value
+  )
+);
+
+watch(
+  unifiedSceneTabs,
+  (tabs) => {
+    if (!tabs.length) {
+      activeBearingSceneRank.value = null;
+      return;
+    }
+    const active = Number(activeBearingSceneRank.value);
+    if (!tabs.some((t) => Number(t.rank) === active)) {
+      activeBearingSceneRank.value = tabs[0].rank;
+    }
+  },
+  { immediate: true }
 );
 
 const bearingSummary = computed(() => ({
@@ -310,16 +358,22 @@ const stats = computed(() => aggregateStats(filteredRows.value));
 const sceneRankOptions = computed(() => {
   const byRank = new Map();
   for (const s of props.sceneResult?.scenes || []) {
-    byRank.set(s.rank, s.sceneType);
+    const rank = Number(s.rank);
+    if (Number.isFinite(rank)) byRank.set(rank, s.sceneType);
   }
   for (const r of allRows.value) {
-    if (!byRank.has(r.sceneRank)) {
-      byRank.set(r.sceneRank, r.sceneType);
+    const rank = Number(r.sceneRank);
+    if (Number.isFinite(rank) && !byRank.has(rank)) {
+      byRank.set(rank, r.sceneType);
     }
   }
-  return [...byRank.entries()]
-    .map(([rank, sceneType]) => ({ rank, sceneType }))
-    .sort((a, b) => a.rank - b.rank);
+  // 筛选下拉只保留本次分析过的预筛选序号，与图/表一致
+  const entries = analyzedRanks.value.size
+    ? [...byRank.entries()].filter(([rank]) => analyzedRanks.value.has(rank))
+    : [...byRank.entries()];
+  return sortScenesForDisplay(
+    entries.map(([rank, sceneType]) => ({ rank, sceneType }))
+  );
 });
 
 const commLinkOptions = computed(() => uniqueCommLinks(allRows.value));

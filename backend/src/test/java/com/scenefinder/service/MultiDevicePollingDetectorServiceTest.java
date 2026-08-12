@@ -96,6 +96,7 @@ class MultiDevicePollingDetectorServiceTest {
         props.setPollingPeriodMaxSec(20.0);
         props.setPollingPeriodToleranceRatio(0.18);
         props.setPollingMinPeriodicityScore(0.55);
+        props.setPollingMinSlotRoundCoverageRatio(0.8);
         props.setFreqClusterGapMhz(0.01);
         return props;
     }
@@ -103,7 +104,7 @@ class MultiDevicePollingDetectorServiceTest {
     private static List<DetectionPoint> buildPeriodicPoints(double[] bearings, double periodSec) {
         List<DetectionPoint> points = new ArrayList<>();
         long baseMs = Instant.parse("2025-07-03T10:00:00Z").toEpochMilli();
-        for (int round = 0; round < 10; round++) {
+        for (int round = 0; round < 13; round++) {
             long burstStart = baseMs + Math.round(round * periodSec * 1000.0);
             for (int bi = 0; bi < bearings.length; bi++) {
                 points.add(new DetectionPoint(

@@ -272,7 +272,7 @@ public class QualityScene {
                 freqCenterMhz,
                 freqMinMhz,
                 freqMaxMhz,
-                distinctDeviceCount,
+                laneCount > 0 ? laneCount : distinctDeviceCount,
                 score,
                 trackCount,
                 medianSeparationDeg,

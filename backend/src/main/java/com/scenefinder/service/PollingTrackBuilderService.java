@@ -92,86 +92,82 @@ public class PollingTrackBuilderService {
             return LaneBuildResult.empty();
         }
 
-        List<BurstSnapshot> aligned = pickAlignedRun(bursts, scene.getPollingPeriodSec(), props);
+        List<BurstSnapshot> aligned = alignBurstsToSceneWindow(bursts, scene, scene.getPollingPeriodSec(), props);
         if (aligned.size() < 2) {
             return LaneBuildResult.empty();
         }
 
-        int laneCount = resolveLaneCount(aligned, props);
-        if (laneCount < props.getPollingMinBearingsPerBurst()) {
+        int minRoundHits = PollingAlignmentUtil.minRoundHits(
+                aligned.size(), props.getPollingMinSlotRoundCoverageRatio());
+        List<Double> persistentSlots = identifyPersistentSlotCenters(aligned, minRoundHits, props);
+        if (persistentSlots.size() < props.getPollingMinBearingsPerBurst()) {
             return LaneBuildResult.empty();
         }
 
-        List<BearingTrack> laneTracks = new ArrayList<>(laneCount);
-        for (int i = 0; i < laneCount; i++) {
+        List<BearingTrack> laneTracks = new ArrayList<>(persistentSlots.size());
+        for (int i = 0; i < persistentSlots.size(); i++) {
             BearingTrack track = new BearingTrack();
             track.setId(startTrackId + i);
             laneTracks.add(track);
         }
 
         Map<SourceRowRef, Integer> rowToTrackId = new LinkedHashMap<>();
-        List<Double> prevLaneBearings = null;
+        int[] slotRoundHits = new int[persistentSlots.size()];
 
         for (BurstSnapshot burst : aligned) {
-            List<BearingCluster> clusters = burst.getClusters();
+            List<PollingBurstClustering.BearingCluster> clusters = burst.getClusters();
             if (clusters.isEmpty()) {
                 continue;
             }
-            int[] assignment;
-            if (prevLaneBearings == null) {
-                assignment = initialLaneAssignment(clusters, laneCount);
-                prevLaneBearings = new ArrayList<>(laneCount);
-                for (int lane = 0; lane < laneCount; lane++) {
-                    prevLaneBearings.add(laneCenter(clusters, assignment, lane));
-                }
-            } else {
-                assignment = assignClustersToLanes(prevLaneBearings, clusters, laneCount);
-                for (int lane = 0; lane < laneCount; lane++) {
-                    int clusterIdx = assignment[lane];
-                    if (clusterIdx >= 0 && clusterIdx < clusters.size()) {
-                        prevLaneBearings.set(lane, clusters.get(clusterIdx).getCenterDeg());
-                    }
-                }
-            }
-
-            for (int lane = 0; lane < laneCount; lane++) {
-                int clusterIdx = assignment[lane];
+            int[] assignment = assignClustersToLanes(persistentSlots, clusters, persistentSlots.size());
+            for (int slot = 0; slot < persistentSlots.size(); slot++) {
+                int clusterIdx = assignment[slot];
                 if (clusterIdx < 0 || clusterIdx >= clusters.size()) {
                     continue;
                 }
-                BearingTrack track = laneTracks.get(lane);
-                for (DetectionPoint point : clusters.get(clusterIdx).getPoints()) {
-                    track.getObservations().add(new TrackObservation(
-                            point.getTime(),
-                            BearingMath.normalize360(point.getBearingDeg()),
-                            point.getFrequencyMhz(),
-                            point.getSourceFile(),
-                            point.getRowIndex()
-                    ));
+                slotRoundHits[slot]++;
+                BearingTrack track = laneTracks.get(slot);
+                PollingBurstClustering.BearingCluster cluster = clusters.get(clusterIdx);
+                for (DetectionPoint point : cluster.getPoints()) {
                     rowToTrackId.put(point.sourceRow(), track.getId());
                 }
+                track.getObservations().add(roundObservation(cluster, burst.getCenterTime()));
             }
         }
 
-        for (BearingTrack track : laneTracks) {
-            track.getObservations().sort(Comparator.comparing(TrackObservation::getTime));
-        }
-
-        List<BearingTrack> nonEmpty = laneTracks.stream()
-                .filter(t -> t.getObservations().size() >= 2)
-                .collect(Collectors.toList());
-        if (nonEmpty.isEmpty()) {
-            return LaneBuildResult.empty();
-        }
-
+        List<BearingTrack> nonEmpty = new ArrayList<>();
         Map<SourceRowRef, Integer> filteredRows = new LinkedHashMap<>();
-        for (BearingTrack track : nonEmpty) {
+        for (int slot = 0; slot < persistentSlots.size(); slot++) {
+            if (slotRoundHits[slot] < minRoundHits) {
+                continue;
+            }
+            BearingTrack track = laneTracks.get(slot);
+            if (track.getObservations().size() < 2) {
+                continue;
+            }
+            track.getObservations().sort(Comparator.comparing(TrackObservation::getTime));
+            nonEmpty.add(track);
             for (TrackObservation obs : track.getObservations()) {
                 filteredRows.put(obs.sourceRow(), track.getId());
             }
         }
+        if (nonEmpty.isEmpty()) {
+            return LaneBuildResult.empty();
+        }
 
         return new LaneBuildResult(nonEmpty, filteredRows, nonEmpty.size(), aligned.size());
+    }
+
+    /** 每轮每槽仅保留一个代表点（簇心方位 + 轮次中心时刻），避免同轮多点被连成折线。 */
+    private static TrackObservation roundObservation(PollingBurstClustering.BearingCluster cluster, Instant roundCenterTime) {
+        DetectionPoint rep = cluster.getPoints().get(0);
+        return new TrackObservation(
+                roundCenterTime,
+                BearingMath.normalize360(cluster.getCenterDeg()),
+                rep.getFrequencyMhz(),
+                rep.getSourceFile(),
+                rep.getRowIndex()
+        );
     }
 
     private static List<DetectionPoint> filterScenePoints(QualityScene scene, List<DetectionPoint> allPoints) {
@@ -188,6 +184,40 @@ public class PollingTrackBuilderService {
         }
         inScene.sort(Comparator.comparing(DetectionPoint::getTime));
         return inScene;
+    }
+
+    /**
+     * 按场景评分时间窗与周期网格对齐 burst，要求覆盖足够多的期望轮次（整窗重复）。
+     */
+    private List<BurstSnapshot> alignBurstsToSceneWindow(
+            List<BurstSnapshot> bursts,
+            QualityScene scene,
+            double periodSec,
+            SceneFinderProperties props
+    ) {
+        if (bursts.isEmpty() || periodSec <= 0) {
+            return Collections.emptyList();
+        }
+        long periodMs = Math.max(1, Math.round(periodSec * 1000.0));
+        double tolMs = periodSec * props.getPollingPeriodToleranceRatio() * 1000.0;
+        long startMs = scene.getWindowStart().toEpochMilli();
+        long endMs = scene.getWindowEnd().toEpochMilli();
+
+        List<BurstSnapshot> sorted = bursts.stream()
+                .sorted(Comparator.comparing(BurstSnapshot::getCenterTime))
+                .collect(Collectors.toList());
+
+        List<BurstSnapshot> aligned = new ArrayList<>();
+        java.util.Set<BurstSnapshot> used = new java.util.HashSet<>();
+        for (long targetMs = startMs; targetMs <= endMs + tolMs; targetMs += periodMs) {
+            BurstSnapshot hit = findBurstNear(sorted, targetMs, tolMs, used);
+            if (hit != null) {
+                aligned.add(hit);
+                used.add(hit);
+            }
+        }
+
+        return aligned;
     }
 
     private List<BurstSnapshot> detectValidBursts(
@@ -210,7 +240,8 @@ public class PollingTrackBuilderService {
             }
             i = j;
 
-            List<BearingCluster> clusters = clusterPoints(group, mergeGapDeg);
+            List<PollingBurstClustering.BearingCluster> clusters = PollingBurstClustering.clusterConcurrentTargets(
+                    group, props);
             if (clusters.size() < props.getPollingMinBearingsPerBurst()) {
                 continue;
             }
@@ -294,21 +325,25 @@ public class PollingTrackBuilderService {
         return best;
     }
 
-    private static int resolveLaneCount(List<BurstSnapshot> aligned, SceneFinderProperties props) {
-        int fromScene = aligned.stream()
-                .mapToInt(b -> b.getClusters().size())
-                .max()
-                .orElse(0);
+    /** 在整段对齐轮次中，识别出现次数 ≥ minRoundHits 的稳定方位槽位。 */
+    private static List<Double> identifyPersistentSlotCenters(
+            List<BurstSnapshot> aligned,
+            int minRoundHits,
+            SceneFinderProperties props
+    ) {
         double matchDeg = Math.max(2.0, props.getPollingMinInterClusterSeparationDeg());
-        List<Double> seedSlots = new ArrayList<>();
-        for (BearingCluster cluster : aligned.get(0).getClusters()) {
-            seedSlots.add(cluster.getCenterDeg());
-        }
-        seedSlots.sort(Double::compareTo);
-
-        int stable = 0;
-        int minHits = Math.max(2, (int) Math.ceil(aligned.size() * 0.7));
         double maxStd = props.getPollingMaxSlotBearingStdDeg();
+
+        BurstSnapshot seedBurst = aligned.stream()
+                .max(Comparator.comparingInt(b -> b.getClusters().size()))
+                .orElse(aligned.get(0));
+
+        List<Double> seedSlots = seedBurst.getClusters().stream()
+                .map(PollingBurstClustering.BearingCluster::getCenterDeg)
+                .sorted()
+                .collect(Collectors.toList());
+
+        List<Double> persistent = new ArrayList<>();
         for (double slot : seedSlots) {
             List<Double> hits = new ArrayList<>();
             for (BurstSnapshot burst : aligned) {
@@ -317,17 +352,33 @@ public class PollingTrackBuilderService {
                     hits.add(matched);
                 }
             }
-            if (hits.size() >= minHits && stdDev(hits) <= maxStd) {
-                stable++;
+            if (hits.size() >= minRoundHits && stdDev(hits) <= maxStd) {
+                persistent.add(circularMeanDeg(hits));
             }
         }
-        return Math.max(fromScene, stable);
+        persistent.sort(Double::compareTo);
+        return persistent;
     }
 
-    private static Double nearestCenterWithin(double reference, List<BearingCluster> clusters, double maxDeltaDeg) {
+    private static double circularMeanDeg(List<Double> bearings) {
+        double sin = 0;
+        double cos = 0;
+        for (double b : bearings) {
+            double rad = Math.toRadians(b);
+            sin += Math.sin(rad);
+            cos += Math.cos(rad);
+        }
+        return BearingMath.normalize360(Math.toDegrees(Math.atan2(sin, cos)));
+    }
+
+    private static Double nearestCenterWithin(
+            double reference,
+            List<PollingBurstClustering.BearingCluster> clusters,
+            double maxDeltaDeg
+    ) {
         Double best = null;
         double bestGap = Double.POSITIVE_INFINITY;
-        for (BearingCluster cluster : clusters) {
+        for (PollingBurstClustering.BearingCluster cluster : clusters) {
             double gap = Math.abs(BearingMath.shortestDelta(reference, cluster.getCenterDeg()));
             if (gap <= maxDeltaDeg && gap < bestGap) {
                 bestGap = gap;
@@ -350,63 +401,12 @@ public class PollingTrackBuilderService {
         return Math.sqrt(var / values.size());
     }
 
-    private static List<BearingCluster> clusterPoints(List<DetectionPoint> points, double mergeGapDeg) {
-        List<DetectionPoint> sorted = points.stream()
-                .sorted(Comparator.comparingDouble(p -> BearingMath.normalize360(p.getBearingDeg())))
-                .collect(Collectors.toList());
-        List<BearingCluster> clusters = new ArrayList<>();
-        List<DetectionPoint> current = new ArrayList<>();
-        current.add(sorted.get(0));
-        for (int i = 1; i < sorted.size(); i++) {
-            DetectionPoint prev = sorted.get(i - 1);
-            DetectionPoint next = sorted.get(i);
-            if (Math.abs(BearingMath.shortestDelta(prev.getBearingDeg(), next.getBearingDeg())) <= mergeGapDeg) {
-                current.add(next);
-            } else {
-                clusters.add(toCluster(current));
-                current = new ArrayList<>();
-                current.add(next);
-            }
-        }
-        clusters.add(toCluster(current));
-        clusters.sort(Comparator.comparingDouble(BearingCluster::getCenterDeg));
-        return clusters;
-    }
-
-    private static BearingCluster toCluster(List<DetectionPoint> points) {
-        List<Double> bearings = points.stream()
-                .map(p -> BearingMath.normalize360(p.getBearingDeg()))
-                .collect(Collectors.toList());
-        double sin = 0;
-        double cos = 0;
-        for (double b : bearings) {
-            double rad = Math.toRadians(b);
-            sin += Math.sin(rad);
-            cos += Math.cos(rad);
-        }
-        double center = BearingMath.normalize360(Math.toDegrees(Math.atan2(sin, cos)));
-        return new BearingCluster(center, new ArrayList<>(points));
-    }
-
-    /** 首轮：按方位排序的簇依次映射到 lane 0..N-1。 */
-    private static int[] initialLaneAssignment(List<BearingCluster> clusters, int laneCount) {
-        int[] assignment = new int[laneCount];
-        for (int i = 0; i < laneCount; i++) {
-            assignment[i] = -1;
-        }
-        int n = Math.min(laneCount, clusters.size());
-        for (int i = 0; i < n; i++) {
-            assignment[i] = i;
-        }
-        return assignment;
-    }
-
     /**
-     * 跨轮槽位匹配：最小化与上一轮各 lane 方位的总角差（支持缺轮、簇数波动）。
+     * 跨轮槽位匹配：每轮将 burst 内各方位簇匹配到固定槽位，仅相邻轮次连线。
      */
     private static int[] assignClustersToLanes(
-            List<Double> prevLaneBearings,
-            List<BearingCluster> clusters,
+            List<Double> slotCenters,
+            List<PollingBurstClustering.BearingCluster> clusters,
             int laneCount
     ) {
         int[] assignment = new int[laneCount];
@@ -426,7 +426,7 @@ public class PollingTrackBuilderService {
                     cost[i][j] = highCost;
                 } else {
                     cost[i][j] = Math.abs(BearingMath.shortestDelta(
-                            prevLaneBearings.get(i), clusters.get(j).getCenterDeg()));
+                            slotCenters.get(i), clusters.get(j).getCenterDeg()));
                 }
             }
         }
@@ -483,19 +483,11 @@ public class PollingTrackBuilderService {
         }
     }
 
-    private static double laneCenter(List<BearingCluster> clusters, int[] assignment, int lane) {
-        int idx = assignment[lane];
-        if (idx < 0 || idx >= clusters.size()) {
-            return 0;
-        }
-        return clusters.get(idx).getCenterDeg();
-    }
-
     private static final class BurstSnapshot {
         private final Instant centerTime;
-        private final List<BearingCluster> clusters;
+        private final List<PollingBurstClustering.BearingCluster> clusters;
 
-        BurstSnapshot(Instant centerTime, List<BearingCluster> clusters) {
+        BurstSnapshot(Instant centerTime, List<PollingBurstClustering.BearingCluster> clusters) {
             this.centerTime = centerTime;
             this.clusters = clusters;
         }
@@ -504,26 +496,8 @@ public class PollingTrackBuilderService {
             return centerTime;
         }
 
-        List<BearingCluster> getClusters() {
+        List<PollingBurstClustering.BearingCluster> getClusters() {
             return clusters;
-        }
-    }
-
-    private static final class BearingCluster {
-        private final double centerDeg;
-        private final List<DetectionPoint> points;
-
-        BearingCluster(double centerDeg, List<DetectionPoint> points) {
-            this.centerDeg = centerDeg;
-            this.points = points;
-        }
-
-        double getCenterDeg() {
-            return centerDeg;
-        }
-
-        List<DetectionPoint> getPoints() {
-            return points;
         }
     }
 }

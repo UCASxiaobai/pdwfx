@@ -93,17 +93,16 @@ public class SceneFinderService {
         for (QualityScene scene : rawPollingScenes) {
             PollingTrackBuilderService.LaneBuildResult built =
                     pollingTrackBuilderService.buildLaneTracks(scene, points, effective, nextTrackId);
-            if (!built.getTracks().isEmpty()) {
-                tracks.addAll(built.getTracks());
-                nextTrackId += built.getTracks().size();
-                List<Integer> laneIds = built.getTracks().stream()
-                        .map(BearingTrack::getId)
-                        .collect(Collectors.toList());
-                pollingScenes.add(scene.withPollingLaneTracks(
-                        laneIds, built.getLaneCount(), built.getAlignedRoundCount()));
-            } else {
-                pollingScenes.add(scene);
+            if (built.getTracks().isEmpty()) {
+                continue;
             }
+            tracks.addAll(built.getTracks());
+            nextTrackId += built.getTracks().size();
+            List<Integer> laneIds = built.getTracks().stream()
+                    .map(BearingTrack::getId)
+                    .collect(Collectors.toList());
+            pollingScenes.add(scene.withPollingLaneTracks(
+                    laneIds, built.getLaneCount(), built.getAlignedRoundCount()));
         }
 
         List<QualityScene> trackScenes = sceneScorerService.findTopScenes(tracks, effective);

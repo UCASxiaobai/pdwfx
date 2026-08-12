@@ -207,6 +207,12 @@ public class SceneFinderProperties {
     private double pollingMinPeriodicityScore = 0.55;
 
     /**
+     * 单个方位槽位/轮询目标在场景时间窗轮次中至少出现的比例（0~1）。
+     * 默认 0.8：统计窗内对齐轮次数 N，仅保留在至少 0.8×N 轮中出现的点位。
+     */
+    private double pollingMinSlotRoundCoverageRatio = 0.8;
+
+    /**
      * 融合去重：同类型两窗时间重叠占较短窗比例超过该值，且轨迹/周期内容相似，才丢弃低分者。
      * 默认 0.92；勿设过低（如 0.65），否则滑动窗步进 30s、窗长 120s 时相邻窗会被链式删光。
      */
@@ -393,6 +399,7 @@ public class SceneFinderProperties {
         setPollingPeriodMaxSec(source.getPollingPeriodMaxSec());
         setPollingPeriodToleranceRatio(source.getPollingPeriodToleranceRatio());
         setPollingMinPeriodicityScore(source.getPollingMinPeriodicityScore());
+        setPollingMinSlotRoundCoverageRatio(source.getPollingMinSlotRoundCoverageRatio());
         setSceneFusionOverlapSuppressRatio(source.getSceneFusionOverlapSuppressRatio());
         setMaxVisualizationScatterPoints(source.getMaxVisualizationScatterPoints());
         setInlineVisualizationMaxDetections(source.getInlineVisualizationMaxDetections());
@@ -582,6 +589,14 @@ public class SceneFinderProperties {
 
     public void setPollingMinPeriodicityScore(double pollingMinPeriodicityScore) {
         this.pollingMinPeriodicityScore = pollingMinPeriodicityScore;
+    }
+
+    public double getPollingMinSlotRoundCoverageRatio() {
+        return pollingMinSlotRoundCoverageRatio;
+    }
+
+    public void setPollingMinSlotRoundCoverageRatio(double pollingMinSlotRoundCoverageRatio) {
+        this.pollingMinSlotRoundCoverageRatio = pollingMinSlotRoundCoverageRatio;
     }
 
     public double getSceneFusionOverlapSuppressRatio() {

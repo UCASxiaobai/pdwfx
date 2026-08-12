@@ -21,15 +21,17 @@ export function formatTimeRangeParts(start, end) {
 function sceneByRank(sceneResult) {
   const map = new Map();
   for (const s of sceneResult?.scenes || []) {
-    map.set(s.rank, s);
+    const rank = Number(s.rank);
+    if (Number.isFinite(rank)) map.set(rank, s);
   }
   return map;
 }
 
 export function resolveSceneLabel(sceneRank, sceneType, sceneResult) {
-  const scene = sceneByRank(sceneResult).get(sceneRank);
+  const rank = Number(sceneRank);
+  const scene = sceneByRank(sceneResult).get(rank);
   const type = sceneType || scene?.sceneType;
-  return formatSceneLabel(sceneRank, type);
+  return formatSceneLabel(rank, type);
 }
 
 function networkGroupKey(row) {
@@ -96,19 +98,23 @@ export function applyMergeRowspans(list, start = 0, end = list.length) {
 export function applySceneRowspans(rows, sceneResult) {
   const scenes = sceneByRank(sceneResult);
   const list = (rows || []).map((r) => {
-    const scene = scenes.get(r.sceneRank);
+    const rank = Number(r.sceneRank);
+    const scene = scenes.get(rank);
     const timeParts = formatTimeRangeParts(r.windowStart, r.windowEnd);
     return {
       ...r,
-      sceneLabel: resolveSceneLabel(r.sceneRank, r.sceneType || scene?.sceneType, sceneResult),
+      sceneRank: rank,
+      sceneType: r.sceneType || scene?.sceneType,
+      sceneLabel: resolveSceneLabel(rank, r.sceneType || scene?.sceneType, sceneResult),
       timeStartLabel: timeParts.start,
       timeEndLabel: timeParts.end
     };
   });
 
+  // 与场景 Tab / 预筛选序号一致：按 sceneRank 升序，不按类型重排
   list.sort((a, b) => {
     if (a.sceneRank !== b.sceneRank) return a.sceneRank - b.sceneRank;
-    if (a.networkId !== b.networkId) return a.networkId - b.networkId;
+    if (a.networkId !== b.networkId) return Number(a.networkId) - Number(b.networkId);
     return String(a.targetId || "").localeCompare(String(b.targetId || ""));
   });
 

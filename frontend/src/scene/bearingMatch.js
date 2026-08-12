@@ -16,7 +16,7 @@ export const DEFAULT_MATCH_OPTIONS = {
   requireMotionConsistent: false,
   /** 仅合并信号分析已判为相同平台类型（GROUND/AWACS/AIR）的轨迹 */
   requireSameTargetType: true,
-  showOthers: true,
+  showOthers: false,
   topColoredTracks: 30,
   /** 频率占用矩阵：按目标数排序后保留的频点列数 */
   matrixTopFreqs: 12

@@ -296,7 +296,10 @@ public class VisualizationService {
         Map<String, Object> chartAnnotations = buildPollingAnnotations(annotationSample, scene);
         if (participantsOnly) {
             chartAnnotations.put("explanation",
-                    "仅显示已识别轮询目标在各轮 burst 中的测向点（共 "
+                    "仅显示在评分时间窗全部 "
+                            + scene.getTrackCount() + " 轮中、至少参与 "
+                            + (int) Math.ceil(scene.getTrackCount() * 0.8)
+                            + " 轮（≥80%）的轮询目标测向点（共 "
                             + scene.getDistinctDeviceCount() + " 个目标）。");
         }
 

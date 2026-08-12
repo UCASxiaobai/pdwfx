@@ -54,6 +54,7 @@ scene-finder:
   polling-period-max-sec: 20.0
   polling-period-tolerance-ratio: 0.18
   polling-min-periodicity-score: 0.55
+  polling-min-slot-round-coverage-ratio: 0.8
   scene-fusion-overlap-suppress-ratio: 0.92
   max-visualization-scatter-points: 6000
   inline-visualization-max-detections: 200000

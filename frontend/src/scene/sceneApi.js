@@ -70,7 +70,11 @@ export async function processScenesPipeline(
   { sourceCsvPath, outputDir, sceneRanks, freqTolerance, preloadAll },
   { signal, onProgress, onPartialRows }
 ) {
-  const ranks = sceneRanks || [];
+  // 始终按预筛选序号升序分析，避免勾选顺序打乱结果表与场景对应关系
+  const ranks = [...(sceneRanks || [])]
+    .map(Number)
+    .filter((r) => Number.isFinite(r) && r > 0)
+    .sort((a, b) => a - b);
   const forwardItems = [];
   const allRows = [];
   let totalMs = 0;

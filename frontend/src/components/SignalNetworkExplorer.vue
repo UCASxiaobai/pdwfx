@@ -12,7 +12,7 @@
         <label class="scene-pick">
           优质场景
           <select v-model.number="localSceneRank" @change="onSceneChange">
-            <option v-for="item in sceneItems" :key="item.rank" :value="item.rank">
+            <option v-for="item in sortedSceneItems" :key="item.rank" :value="item.rank">
               #{{ item.rank }} {{ sceneTypeLabel(item.sceneType) }}
             </option>
           </select>
@@ -159,7 +159,7 @@
 import { computed, ref, watch } from "vue";
 import AnalystWorkbench from "./AnalystWorkbench.vue";
 import { fetchNetworkDetail } from "../scene/sceneApi.js";
-import { sceneTypeLabel } from "../scene/sceneFilters.js";
+import { sceneTypeLabel, sortScenesForDisplay } from "../scene/sceneFilters.js";
 import {
   commModeLabel,
   convergenceLabel,
@@ -199,9 +199,12 @@ const workbenchRef = ref(null);
 let loadSeq = 0;
 const networkCache = new Map();
 
-const currentItem = computed(() =>
-  props.sceneItems.find((x) => x.rank === localSceneRank.value)
-);
+const sortedSceneItems = computed(() => sortScenesForDisplay(props.sceneItems));
+
+const currentItem = computed(() => {
+  const want = Number(localSceneRank.value);
+  return sortedSceneItems.value.find((x) => Number(x.rank) === want);
+});
 
 const analysisId = computed(() => currentItem.value?.session?.analysisId || "");
 
@@ -267,8 +270,9 @@ watch(
   () => props.sceneItems,
   (items) => {
     if (!items?.length) return;
-    if (localSceneRank.value == null || !items.some((x) => x.rank === localSceneRank.value)) {
-      localSceneRank.value = props.initialSceneRank ?? items[0].rank;
+    const want = Number(localSceneRank.value);
+    if (localSceneRank.value == null || !items.some((x) => Number(x.rank) === want)) {
+      localSceneRank.value = Number(props.initialSceneRank ?? items[0].rank);
     }
     if (props.initialNetworkId != null) {
       selectNetwork({ networkId: props.initialNetworkId });
@@ -329,7 +333,7 @@ function focusTarget(targetId) {
 
 function focusNetwork(sceneRank, networkId, targetId = null) {
   activeTargetId.value = targetId || null;
-  localSceneRank.value = sceneRank;
+  localSceneRank.value = Number(sceneRank);
   selectNetwork({ networkId });
 }
 

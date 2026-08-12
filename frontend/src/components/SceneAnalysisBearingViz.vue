@@ -4,21 +4,21 @@
       <h4>信号分析方位轨迹 · 分频视图</h4>
     </div>
 
-    <div v-if="!tabItems.length" class="viz-empty">当前筛选条件下无可绘制的分析轨迹</div>
+    <div v-if="!sceneTabs.length" class="viz-empty">当前筛选条件下无可绘制的分析轨迹</div>
 
     <template v-else>
       <p class="viz-meta">{{ metaLine }}</p>
 
       <div class="scene-tabs">
         <button
-          v-for="(tab, idx) in tabItems"
+          v-for="tab in sceneTabs"
           :key="tab.rank"
           type="button"
           class="tab"
-          :class="{ active: idx === activeIdx }"
-          @click="activeIdx = idx"
+          :class="{ active: tab.rank === activeRank }"
+          @click="selectTab(tab.rank)"
         >
-          #{{ tab.rank }} {{ sceneTypeLabel(tab.sceneType) }}
+          {{ formatSceneLabel(tab.rank, tab.sceneType) }}
         </button>
       </div>
 
@@ -91,7 +91,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import * as echarts from "echarts";
 import {
-  allowedRanksSignature,
   analysisViewCacheKey,
   forwardItemsSignature
 } from "../scene/analysisViewCache.js";
@@ -101,18 +100,23 @@ import {
   combinedChartHeight,
   facetChartHeight,
   findForwardItemForRank,
-  getOrLoadSceneAnalysisView
+  getOrLoadSceneAnalysisView,
+  applyReportTargetTypes,
+  reportRowsSignature
 } from "../scene/analysisBearing.js";
-import { sceneTypeLabel } from "../scene/sceneFilters.js";
+import { formatSceneLabel } from "../scene/sceneFilters.js";
 
 const props = defineProps({
+  sceneTabs: { type: Array, default: () => [] },
+  activeRank: { type: Number, default: null },
   forwardItems: { type: Array, default: () => [] },
   sceneResult: { type: Object, default: null },
-  allowedRanks: { type: Object, default: null }
+  reportRows: { type: Array, default: () => [] }
 });
 
+const emit = defineEmits(["update:activeRank"]);
+
 const chartEl = ref(null);
-const activeIdx = ref(0);
 const selectedFreqKey = ref("");
 const loading = ref(false);
 const loadError = ref("");
@@ -122,18 +126,15 @@ let chartInst = null;
 let loadSeq = 0;
 let abortCtrl = null;
 
-const tabItems = computed(() => {
-  const analyzed = new Set((props.forwardItems || []).map((f) => f.rank));
-  let list = (props.sceneResult?.scenes || [])
-    .map((s) => ({ rank: s.rank, sceneType: s.sceneType }))
-    .filter((t) => !analyzed.size || analyzed.has(t.rank));
-  if (props.allowedRanks?.size) {
-    list = list.filter((t) => props.allowedRanks.has(t.rank));
-  }
-  return list.sort((a, b) => a.rank - b.rank);
-});
+function selectTab(rank) {
+  emit("update:activeRank", rank);
+}
 
-const currentTab = computed(() => tabItems.value[activeIdx.value] || null);
+const currentTab = computed(() => {
+  const want = Number(props.activeRank);
+  if (!Number.isFinite(want)) return null;
+  return props.sceneTabs.find((t) => Number(t.rank) === want) || null;
+});
 
 function tabCacheKey(tab) {
   const forwardItem = findForwardItemForRank(props.forwardItems, tab.rank);
@@ -146,7 +147,7 @@ const currentView = computed(() => {
   return tabViewCache.value.get(tabCacheKey(tab)) || null;
 });
 
-/** 方位轨迹图数据：轮询场景用 lane 分轨；跨频关联仍读 currentView.targets。 */
+/** 方位轨迹图数据：轮询场景按分析目标分轨、跨轮连线；跨频关联读 currentView.targets。 */
 const chartView = computed(() => {
   const v = currentView.value;
   if (!v) return null;
@@ -166,8 +167,8 @@ const displayGroups = computed(() => {
 
 const metaLine = computed(() => {
   const v = currentView.value;
-  if (!v) return `${tabItems.value.length} 个优质场景`;
-  let line = `${tabItems.value.length} 个场景 · ${v.freqCount} 个通信网频点 · ${v.targetCount} 个分析目标`;
+  if (!v) return `${props.sceneTabs.length} 个场景（与上方场景方位轨迹 Tab 一一对应）`;
+  let line = `${props.sceneTabs.length} 个场景 · ${v.freqCount} 个通信网频点 · ${v.targetCount} 个分析目标`;
   if (v.clusteringMethod === "POSITION_MATCH") {
     line += " · 编批：位置匹配（异频合批）";
   }
@@ -209,20 +210,16 @@ const sceneByRank = computed(() => {
 watch(
   () => [
     forwardItemsSignature(props.forwardItems),
-    allowedRanksSignature(props.allowedRanks)
+    props.activeRank,
+    reportRowsSignature(props.reportRows),
+    props.sceneTabs.map((t) => t.rank).join(",")
   ],
   () => {
-    if (activeIdx.value >= tabItems.value.length) activeIdx.value = 0;
     selectedFreqKey.value = "";
     tabViewCache.value = new Map();
     loadCurrentView();
   }
 );
-
-watch(activeIdx, () => {
-  selectedFreqKey.value = "";
-  loadCurrentView();
-});
 
 watch(selectedFreqKey, async () => {
   await nextTick();
@@ -252,11 +249,12 @@ async function loadCurrentView() {
   loadError.value = "";
   abortCtrl = new AbortController();
   try {
-    const view = await getOrLoadSceneAnalysisView(
+    const baseView = await getOrLoadSceneAnalysisView(
       forwardItem,
       sceneByRank.value.get(tab.rank),
       abortCtrl.signal
     );
+    const view = applyReportTargetTypes(baseView, props.reportRows, tab.rank);
     if (seq !== loadSeq) return;
     tabViewCache.value = new Map(tabViewCache.value).set(tabCacheKey(tab), view);
     loading.value = false;

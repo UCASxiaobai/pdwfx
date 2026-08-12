@@ -1,0 +1,35 @@
+server:
+  port: 19080
+
+spring:
+  application:
+    name: pdwfx-stream
+  servlet:
+    multipart:
+      max-file-size: 512MB
+      max-request-size: 512MB
+
+# 独立流式模块配置（本模块默认启用；原 backend 不受影响）
+stream:
+  tcp:
+    enabled: true
+    port: 19090
+    bind: 0.0.0.0
+  batch:
+    duration-minutes: 5
+    dir: ${user.dir}/stream-data
+    flush-every-rows: 200
+    max-queue-files: 24
+  analyze:
+    # 调用原有 signal-analysis 服务，跳过场景筛选
+    enabled: true
+    base-url: http://localhost:18080
+    freq-tolerance: 0.01
+    preload-all: true
+    workers: 1
+  cors:
+    allowed-origins: "*"
+
+logging:
+  level:
+    com.pdwfx.stream: INFO

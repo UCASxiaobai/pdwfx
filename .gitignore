@@ -1,5 +1,7 @@
 # Build outputs
 /backend/target/
+/stream/target/
+/stream-data/
 /frontend/dist/
 /release/
 /output/

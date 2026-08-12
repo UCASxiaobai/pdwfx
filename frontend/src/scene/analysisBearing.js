@@ -4,9 +4,9 @@ import {
   resolveCachedSession,
   viewByRank
 } from "./analysisViewCache.js";
-import { formatFreq, sceneTypeLabel, targetTypeLabel } from "./sceneFilters.js";
+import { formatFreq, sceneTypeLabel, sortScenesForDisplay, targetTypeLabel, buildDisplaySceneTabs } from "./sceneFilters.js";
 import { isPollingSceneType } from "./pollingBurstMark.js";
-import { buildPollingLaneTracks, flattenTargetsWithSource, pollingLanesAsTargets } from "./pollingLaneTracks.js";
+import { buildPerTargetPollingLine, connectSameTargetBearingLine } from "./pollingLaneTracks.js";
 import { asArray } from "./signalUi.js";
 
 export const TARGET_COLORS = [
@@ -28,6 +28,108 @@ export function resolveTargetTypeLabel(t) {
   const raw = t?.targetTypeLabel || targetTypeLabel(t?.targetType);
   if (!raw || raw === "—") return "未知";
   return raw;
+}
+
+/** 从明细表构建目标类型索引（以研判结果为准）。 */
+export function buildReportTypeIndex(reportRows, sceneRank = null) {
+  const index = new Map();
+  for (const row of reportRows || []) {
+    if (sceneRank != null && row.sceneRank !== sceneRank) continue;
+    const type = row.targetType;
+    if (!type) continue;
+    const freqKey = formatFreq(row.networkFreqMhz);
+    const keys = [
+      `${row.sceneRank}|${row.networkId}|${row.targetId}|${freqKey}`,
+      `${row.sceneRank}|${row.networkId}|${row.targetId}`,
+      `${row.networkId}|${row.targetId}|${freqKey}`,
+      `${row.networkId}|${row.targetId}`
+    ];
+    for (const key of keys) {
+      index.set(key, type);
+    }
+  }
+  return index;
+}
+
+export function lookupReportTargetType(typeIndex, sceneRank, networkId, targetId, freqMhz) {
+  if (!typeIndex?.size || networkId == null || targetId == null) return null;
+  const freqKey = formatFreq(freqMhz);
+  return (
+    typeIndex.get(`${sceneRank}|${networkId}|${targetId}|${freqKey}`)
+    ?? typeIndex.get(`${sceneRank}|${networkId}|${targetId}`)
+    ?? typeIndex.get(`${networkId}|${targetId}|${freqKey}`)
+    ?? typeIndex.get(`${networkId}|${targetId}`)
+  );
+}
+
+/**
+ * 将明细表中的目标类型同步到方位轨迹图（以 networkId+targetId 对齐分析目标）。
+ */
+export function applyReportTargetTypes(view, reportRows, sceneRank) {
+  if (!view) return view;
+  const typeIndex = buildReportTypeIndex(reportRows, sceneRank);
+  if (!typeIndex.size) return view;
+
+  const patchTarget = (t) => {
+    const freq = t.reportNetworkFreqMhz ?? t.networkFreqMhz;
+    const reported = lookupReportTargetType(typeIndex, sceneRank, t.networkId, t.targetId, freq);
+
+    if (reported) {
+      const meta = { targetType: reported, targetTypeLabel: targetTypeLabel(reported) };
+      return {
+        ...t,
+        targetType: reported,
+        targetTypeLabel: resolveTargetTypeLabel(meta)
+      };
+    }
+    return t;
+  };
+
+  const rebuildGroups = (targetList) => {
+    const patched = assignTargetDisplayLabels((targetList || []).map(patchTarget));
+    return enrichFreqGroups(groupTargetsByFreq(patched));
+  };
+
+  const pollingOpts = { polling: !!view.pollingLaneMode };
+  let bearingChart = view.bearingChart;
+  if (bearingChart) {
+    const freqGroups = rebuildGroups(bearingChart.targets);
+    const plotTargets = freqGroups.flatMap((g) => g.targets);
+    bearingChart = {
+      ...bearingChart,
+      targets: plotTargets,
+      freqGroups,
+      ...axisBounds(plotTargets, [], pollingOpts),
+      ySpan: axisBoundsTight(plotTargets, [], pollingOpts).ySpan
+    };
+  }
+
+  const freqGroups = bearingChart?.freqGroups?.length
+    ? bearingChart.freqGroups
+    : rebuildGroups(view.targets);
+  const targets = freqGroups.flatMap((g) => g.targets);
+  const bounds = axisBounds(targets, [], pollingOpts);
+
+  return {
+    ...view,
+    bearingChart,
+    pollingLaneMode: view.pollingLaneMode,
+    freqGroups,
+    targets,
+    targetCount: targets.length,
+    freqCount: freqGroups.length,
+    ...bounds,
+    ySpan: axisBoundsTight(targets, [], pollingOpts).ySpan
+  };
+}
+
+export function reportRowsSignature(rows) {
+  return (rows || [])
+    .map(
+      (r) =>
+        `${r.sceneRank}|${r.networkId}|${r.targetId}|${r.targetType}|${r.networkFreqMhz}`
+    )
+    .join(";");
 }
 
 /** 图例/序列名：目标1-飞机 */
@@ -52,19 +154,12 @@ export function assignTargetDisplayLabels(targets) {
 }
 
 function azimuthLinePoints(azimuthSeries) {
-  const pts = asArray(azimuthSeries)
-    .map((p) => [toEpochMs(p.t), Number(p.v)])
-    .filter((p) => Number.isFinite(p[0]) && p[0] > 0 && Number.isFinite(p[1]))
-    .sort((a, b) => a[0] - b[0]);
-  if (pts.length < 2) return pts;
-  const out = [];
-  for (let i = 0; i < pts.length; i++) {
-    if (i > 0 && Math.abs(pts[i][1] - pts[i - 1][1]) > 15) {
-      out.push([pts[i][0], null]);
-    }
-    out.push(pts[i]);
-  }
-  return out;
+  // 同一分析目标：按时序连线并用 unwrap，避免因方位跳变插入断点
+  const pts = asArray(azimuthSeries).map((p) => {
+    if (Array.isArray(p)) return [Number(p[0]), Number(p[1])];
+    return [toEpochMs(p?.t), Number(p?.v ?? p?.b)];
+  }).filter((p) => Number.isFinite(p[0]) && p[0] > 0 && Number.isFinite(p[1]));
+  return connectSameTargetBearingLine(pts);
 }
 
 const FREQ_LINE_TYPES = ["solid", "dashed", "dotted", [8, 4], [2, 6], [12, 4, 2, 4]];
@@ -168,6 +263,13 @@ function formatClock(ms) {
   return new Date(ms).toLocaleTimeString("zh-CN", { hour12: false });
 }
 
+function parseSceneTimeMs(value) {
+  if (value == null || value === "") return null;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const t = new Date(value).getTime();
+  return Number.isFinite(t) ? t : null;
+}
+
 function groupTargetsByFreq(targets) {
   const map = new Map();
   for (const t of targets) {
@@ -219,7 +321,7 @@ function pointsForFreqBand(azimuthSeries, freqSeries, freqMhz, tol = 0.015) {
       out.push([t, bearing]);
     }
   }
-  return azimuthLinePoints(out);
+  return connectSameTargetBearingLine(out);
 }
 
 export function buildSceneAnalysisView(sceneMeta, item, networks) {
@@ -296,36 +398,39 @@ export function buildSceneAnalysisView(sceneMeta, item, networks) {
   const pollingPeriodSec = Number(sceneMeta?.pollingPeriodSec ?? item?.pollingPeriodSec);
   const pollingOpts = { polling: isPollingSceneType(sceneType) };
 
-  /** 方位轨迹图专用：轮询场景用 lane 分轨；跨频关联仍用上方 signal 分析 targets。 */
+  /**
+   * 轮询方位图：按信号分析目标分别建轨，每轮取一点并跨轮连成完整目标轨迹。
+   * 已判定为同一目标的点默认不断线（breakOnGap=false）。
+   */
   let bearingChart = null;
   let pollingLaneMode = false;
-  if (isPollingSceneType(sceneType) && pollingPeriodSec > 0 && targets.length) {
-    const flatPoints = flattenTargetsWithSource(targets);
-    const laneResult = buildPollingLaneTracks(flatPoints, {
-      periodSec: pollingPeriodSec,
-      minDevices: Number(sceneMeta?.distinctDeviceCount ?? item?.distinctDeviceCount) || 2
-    });
-    if (laneResult.lanes.length) {
-      pollingLaneMode = true;
-      const laneTargets = assignTargetDisplayLabels(
-        pollingLanesAsTargets(laneResult, freqCenter)
-      );
-      const laneFreqGroups = enrichFreqGroups([
-        {
-          freqKey: formatFreq(freqCenter),
-          freqMhz: freqCenter,
-          targets: laneTargets
-        }
-      ]);
-      const lanePlotTargets = laneFreqGroups.flatMap((g) => g.targets);
-      bearingChart = {
-        targets: lanePlotTargets,
-        freqGroups: laneFreqGroups,
-        preferFacet: laneFreqGroups.length > 1,
-        ...axisBounds(lanePlotTargets, [], pollingOpts),
-        ySpan: axisBoundsTight(lanePlotTargets, [], pollingOpts).ySpan
-      };
-    }
+  if (isPollingSceneType(sceneType) && targets.length) {
+    pollingLaneMode = true;
+    const pollingLineOpts = {
+      periodSec: pollingPeriodSec > 0 ? pollingPeriodSec : 0,
+      windowStartMs: parseSceneTimeMs(sceneMeta?.windowStart ?? item?.windowStart),
+      windowEndMs: parseSceneTimeMs(sceneMeta?.windowEnd ?? item?.windowEnd),
+      breakOnGap: false
+    };
+    const sortedTargets = [...targets].sort((a, b) =>
+      String(a.targetId || "").localeCompare(String(b.targetId || ""), undefined, { numeric: true })
+    );
+    const chartTargets = assignTargetDisplayLabels(
+      sortedTargets.map((t) => ({
+        ...t,
+        pollingLane: true,
+        points: buildPerTargetPollingLine(t.points, pollingLineOpts)
+      }))
+    );
+    const chartFreqGroups = enrichFreqGroups(groupTargetsByFreq(chartTargets));
+    const plotTargets = chartFreqGroups.flatMap((g) => g.targets);
+    bearingChart = {
+      targets: plotTargets,
+      freqGroups: chartFreqGroups,
+      preferFacet: chartFreqGroups.length > 1,
+      ...axisBounds(plotTargets, [], pollingOpts),
+      ySpan: axisBoundsTight(plotTargets, [], pollingOpts).ySpan
+    };
   }
 
   return {
@@ -349,7 +454,9 @@ export function buildSceneAnalysisView(sceneMeta, item, networks) {
 }
 
 export function findForwardItemForRank(forwardItems, rank) {
-  return (forwardItems || []).find((x) => x.rank === rank);
+  const want = Number(rank);
+  if (!Number.isFinite(want)) return undefined;
+  return (forwardItems || []).find((x) => Number(x.rank) === want);
 }
 
 export function findForwardItem(forwardItems, unitKey) {
@@ -425,8 +532,8 @@ export async function loadSceneAnalysisView(
 
 export function filterForwardItems(forwardItems, allowedRanks) {
   const list = forwardItems || [];
-  if (!allowedRanks || allowedRanks.size === 0) return list;
-  return list.filter((it) => allowedRanks.has(it.rank));
+  if (!allowedRanks || allowedRanks.size === 0) return sortScenesForDisplay(list);
+  return sortScenesForDisplay(list.filter((it) => allowedRanks.has(it.rank)));
 }
 
 export async function loadAllSceneAnalysisViews(
@@ -437,25 +544,36 @@ export async function loadAllSceneAnalysisViews(
   allowedRanks,
   onProgress
 ) {
-  const list = (forwardItems || []).filter(
-    (it) => !allowedRanks?.size || allowedRanks.has(it.rank)
+  const analyzed = new Set(
+    (forwardItems || []).map((f) => Number(f.rank)).filter(Number.isFinite)
+  );
+  const tabs = buildDisplaySceneTabs([...(sceneByRank?.values?.() || [])], {
+    allowedRanks,
+    requireAnalyzedRanks: analyzed.size ? analyzed : null
+  });
+  const itemByRank = new Map(
+    (forwardItems || [])
+      .map((f) => [Number(f.rank), f])
+      .filter(([r]) => Number.isFinite(r))
   );
   const views = [];
-  for (let i = 0; i < list.length; i++) {
+  for (let i = 0; i < tabs.length; i++) {
     if (signal?.aborted) {
       throw new DOMException("Aborted", "AbortError");
     }
-    const item = list[i];
-    onProgress?.(i + 1, list.length, item.rank);
+    const tab = tabs[i];
+    const item = itemByRank.get(tab.rank);
+    if (!item) continue;
+    onProgress?.(views.length + 1, tabs.length, tab.rank);
     const view = await getOrLoadSceneAnalysisView(
       item,
-      sceneByRank?.get(item.rank),
+      sceneByRank?.get(tab.rank),
       signal,
       freqTolerance
     );
     if (view.targets?.length) views.push(view);
   }
-  return views.sort((a, b) => a.sceneRank - b.sceneRank);
+  return views;
 }
 
 export function facetChartHeight(freqGroupCount) {
@@ -572,7 +690,8 @@ export function buildCombinedSceneChartOption(view, groups) {
         type: "line",
         showSymbol: (t.points || []).length <= 80,
         symbolSize: 4,
-        connectNulls: !t.pollingLane,
+        // 同一分析目标始终连线（含轮询跨轮）
+        connectNulls: true,
         lineStyle: {
           width: t.role === "MASTER" ? 2.5 : 1.5,
           color: t.color,
@@ -616,7 +735,7 @@ export function buildFacetChartOption(view, groups) {
         type: "line",
         showSymbol: (t.points || []).length <= 60,
         symbolSize: 4,
-        connectNulls: !t.pollingLane,
+        connectNulls: true,
         lineStyle: { width: t.role === "MASTER" ? 2.5 : 1.5, color: t.color },
         itemStyle: { color: t.color },
         data: t.points
@@ -698,7 +817,7 @@ export function buildFacetChartOption(view, groups) {
         legendIndex: i,
         showSymbol: !dense,
         symbolSize: 3,
-        connectNulls: !t.pollingLane,
+        connectNulls: true,
         lineStyle: { width: t.role === "MASTER" ? 2.5 : 1.5, color: t.color },
         itemStyle: { color: t.color },
         data: t.points
