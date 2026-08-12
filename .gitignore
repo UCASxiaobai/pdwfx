@@ -20,10 +20,9 @@ test-response.json
 *.rar
 *.pptx
 
-# IDE
-.idea/
+# IDE (keep shared run configs)
+.idea/*
 !.idea/runConfigurations/
-!.idea/runConfigurations/**
 .vscode/
 
 # Stream runtime data
