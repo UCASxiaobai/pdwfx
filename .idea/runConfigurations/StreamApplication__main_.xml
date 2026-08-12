@@ -1,0 +1,10 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="StreamApplication (main)" type="Application" factoryName="Application">
+    <option name="MAIN_CLASS_NAME" value="com.pdwfx.stream.StreamApplication" />
+    <module name="pdwfx-stream" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/stream" />
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>
