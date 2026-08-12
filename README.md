@@ -69,6 +69,28 @@ npm run dev
 
 默认端口：`5173`
 
+### 3) 启动流式模块（独立进程，可选）
+
+本地需有 `stream/` 目录（`pdwfx-stream`）。先启 backend，再启 stream：
+
+```bash
+cd stream
+mvn spring-boot:run
+```
+
+或双击 `scripts/start-stream.bat`。HTTP `19080` / TCP `19090`。
+
+#### IntelliJ IDEA 注意（常见报错）
+
+若出现 `找不到或无法加载主类 com.pdwfx.stream.StreamApplication.java`：
+
+1. **Main class 不要带 `.java`**，必须是：`com.pdwfx.stream.StreamApplication`
+2. **Use classpath of module** 选 `pdwfx-stream`，不要选 `signal-analysis`（backend）
+3. Working directory：`$PROJECT_DIR$/stream`
+4. 若模块列表没有 `pdwfx-stream`：右键 `stream/pom.xml` → **Add as Maven Project**，再 Maven Reload
+
+推荐直接用运行配置 **`StreamApplication`**（Maven `spring-boot:run`），避免主类/classpath 配错。
+
 ## 接口
 
 - `POST /api/signals/analyze`

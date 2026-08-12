@@ -22,4 +22,10 @@ test-response.json
 
 # IDE
 .idea/
+!.idea/runConfigurations/
+!.idea/runConfigurations/**
 .vscode/
+
+# Stream runtime data
+/stream/target/
+/stream-data/
