@@ -16,17 +16,32 @@ stream:
     port: 19090
     bind: 0.0.0.0
   batch:
-    duration-minutes: 5
+    # 按解析出的数据时间跨越该分钟数后自动封批并触发分析；后续点写入下一批
+    duration-minutes: 2
     dir: ${user.dir}/stream-data
     flush-every-rows: 200
     max-queue-files: 24
+    # 落盘前本批内去重（频点+方位+探测时间），减轻后续场景/信号分析
+    dedup-enabled: true
   analyze:
-    # 调用原有 signal-analysis 服务，跳过场景筛选
+    # 封批后：场景筛选/建轨 → 逐场景信号分析 → 写标注 JSON
     enabled: true
     base-url: http://localhost:18080
     freq-tolerance: 0.01
+    # 预构建全部网络详情：目标类型 / 波道占用等与主流程同一套算法
     preload-all: true
     workers: 1
+    scene:
+      # 流式：每频段对本批实际时间跨度评一次（连续+轮询）；false 时才用下方滑动窗参数
+      full-span-window: true
+      window-seconds: 120
+      top-k-track-scenes: 50
+      top-k-polling-scenes: 50
+    annotation:
+      dir: ""
+  display:
+    # 显示软件推送 URL（空则本期不推，仅落盘 annotations）
+    push-url: ""
   cors:
     allowed-origins: "*"
 

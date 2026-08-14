@@ -23,6 +23,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Instant;
 import java.util.Arrays;
 import java.util.Collections;
 import java.time.format.DateTimeFormatter;
@@ -108,6 +109,25 @@ public class SceneFinderService {
         List<QualityScene> trackScenes = sceneScorerService.findTopScenes(tracks, effective);
         List<QualityScene> scenes = sceneFusionService.fuse(trackScenes, pollingScenes, effective);
 
+        // 全段窗：各频段评分窗可能短于整批；最终结果/可视化时间轴统一对齐本批检测起止
+        if (effective.isFullSpanWindow() && !points.isEmpty()) {
+            Instant dataStart = points.stream()
+                    .map(DetectionPoint::getTime)
+                    .min(Instant::compareTo)
+                    .orElse(null);
+            Instant dataEnd = points.stream()
+                    .map(DetectionPoint::getTime)
+                    .max(Instant::compareTo)
+                    .orElse(null);
+            if (dataStart != null && dataEnd != null && !dataEnd.isBefore(dataStart)) {
+                List<QualityScene> expanded = new ArrayList<>(scenes.size());
+                for (QualityScene scene : scenes) {
+                    expanded.add(scene.withWindow(dataStart, dataEnd));
+                }
+                scenes = expanded;
+            }
+        }
+
         Path outputDir = Paths.get(effective.getOutputDir()).toAbsolutePath().normalize();
         Files.createDirectories(outputDir);
 
@@ -190,6 +210,9 @@ public class SceneFinderService {
         merged.setOutputDir(options.getOutputDir() != null ? options.getOutputDir() : merged.getOutputDir());
         if (options.getEnableImportScatter() != null) {
             merged.setEnableImportScatter(options.getEnableImportScatter());
+        }
+        if (options.getFullSpanWindow() != null) {
+            merged.setFullSpanWindow(options.getFullSpanWindow());
         }
         return merged;
     }

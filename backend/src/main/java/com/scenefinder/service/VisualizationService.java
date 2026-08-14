@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.scenefinder.model.BearingMath;
 import com.scenefinder.model.BearingTrack;
 import com.scenefinder.model.DetectionPoint;
+import com.scenefinder.model.FrequencyBandUtils;
 import com.scenefinder.model.PeriodFormatUtils;
 import com.scenefinder.model.QualityScene;
 import com.scenefinder.model.SceneType;
@@ -35,7 +36,8 @@ import java.util.stream.Collectors;
  * 生成交互式 {@code visualization.html}：场景汇总表 + Chart.js 方位-时间轨迹图。
  * <p>
  * 数据来自 {@link QualityScene} 与 {@link BearingTrack}；不单独配置参数，
- * 场景个数由分析时的 {@code topKScenes} 决定，轨迹图 tab 受 {@link #MAX_SCENES} 限制。
+ * 场景个数由分析时的 {@code topKScenes}/{@code topKTrackScenes}+{@code topKPollingScenes} 决定；
+ * 每个入选场景均生成轨迹图（不再额外截断）。
  * </p>
  */
 @Service
@@ -45,12 +47,6 @@ public class VisualizationService {
             DateTimeFormatter.ofPattern("yyyy年M月d日", Locale.CHINA);
     private static final DateTimeFormatter CLOCK =
             DateTimeFormatter.ofPattern("HH:mm:ss", Locale.CHINA);
-
-    /**
-     * 轨迹图 tab 数量上限。场景表展示 topKScenes 条；超过此值的场景仅有表格无轨迹图切换按钮。
-     * 需更多 tab 时增大此常量并重新编译。
-     */
-    private static final int MAX_SCENES = 40;
 
     /** 每个场景轨迹图中最多绘制的代表轨迹条数（按平均方位均匀选取）。 */
     private static final int MAX_TRACKS_PER_SCENE = 10;
@@ -245,9 +241,7 @@ public class VisualizationService {
             int maxScatterPoints
     ) {
         List<Map<String, Object>> views = new ArrayList<>();
-        int limit = Math.min(MAX_SCENES, scenes.size());
-        for (int i = 0; i < limit; i++) {
-            QualityScene scene = scenes.get(i);
+        for (QualityScene scene : scenes) {
             if (scene.getSceneType() == SceneType.MULTI_DEVICE_POLLING) {
                 views.add(buildPollingSceneView(scene, allPoints, trackById, zone, maxScatterPoints));
             } else {
@@ -308,15 +302,17 @@ public class VisualizationService {
             yMin = 0;
             yMax = 360;
         }
-        if (xMin == Long.MAX_VALUE) {
-            xMin = scene.getWindowStart().toEpochMilli();
-            xMax = scene.getWindowEnd().toEpochMilli();
-        }
+        // 时间轴始终用场景窗（全段窗下即本批起止），避免仅按有点轨迹收缩
+        xMin = scene.getWindowStart().toEpochMilli();
+        xMax = scene.getWindowEnd().toEpochMilli();
 
         Map<String, Object> view = new LinkedHashMap<>();
         view.put("viewMode", "polling");
         view.put("sceneRank", scene.getRank());
-        view.put("title", "场景 " + scene.getRank() + " · 多设备轮询通信");
+        view.put("freqCenterMhz", scene.getFreqCenterMhz());
+        view.put("freqMinMhz", scene.getFreqMinMhz());
+        view.put("freqMaxMhz", scene.getFreqMaxMhz());
+        view.put("title", "场景 " + scene.getRank() + " · " + formatSceneFreqTitle(scene) + "多设备轮询通信");
         view.put("dateLabel", DATE_LABEL.format(scene.getWindowStart().atZone(zone)));
         view.put("timeRange", CLOCK.format(scene.getWindowStart().atZone(zone))
                 + " — " + CLOCK.format(scene.getWindowEnd().atZone(zone)));
@@ -403,6 +399,13 @@ public class VisualizationService {
             target.put("trackId", trackId);
             target.put("label", "轮询目标" + index);
             target.put("color", TARGET_COLORS[(index - 1) % TARGET_COLORS.length]);
+            // 平均方位，供流式页叠目标类型时按方位匹配
+            double sumY = 0;
+            for (Map<String, Object> pt : points) {
+                sumY += ((Number) pt.get("y")).doubleValue();
+            }
+            target.put("meanBearing", round1(sumY / points.size()));
+            target.put("freqMhz", round3(FrequencyBandUtils.dominantFrequencyMhz(track)));
             target.put("points", points);
             targets.add(target);
         }
@@ -489,23 +492,20 @@ public class VisualizationService {
         for (TrackSeries series : selected) {
             String label = "目标" + (++targetIndex);
             String color = TARGET_COLORS[(targetIndex - 1) % TARGET_COLORS.length];
-            trackPayload.add(toTrackPayload(series, label, color));
+            BearingTrack src = trackById.get(series.getTrackId());
+            double freqMhz = src != null ? FrequencyBandUtils.dominantFrequencyMhz(src) : Double.NaN;
+            trackPayload.add(toTrackPayload(series, label, color, freqMhz));
         }
 
         double yMin = Double.POSITIVE_INFINITY;
         double yMax = Double.NEGATIVE_INFINITY;
-        long xMin = Long.MAX_VALUE;
-        long xMax = Long.MIN_VALUE;
         for (Map<String, Object> track : trackPayload) {
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> points = (List<Map<String, Object>>) track.get("points");
             for (Map<String, Object> p : points) {
                 double y = ((Number) p.get("y")).doubleValue();
-                long x = ((Number) p.get("x")).longValue();
                 yMin = Math.min(yMin, y);
                 yMax = Math.max(yMax, y);
-                xMin = Math.min(xMin, x);
-                xMax = Math.max(xMax, x);
             }
         }
         double pad = Math.max(3.0, (yMax - yMin) * 0.08);
@@ -513,15 +513,16 @@ public class VisualizationService {
             yMin = 0;
             yMax = 360;
         }
-        if (xMin == Long.MAX_VALUE) {
-            xMin = scene.getWindowStart().toEpochMilli();
-            xMax = scene.getWindowEnd().toEpochMilli();
-        }
+        long xMin = scene.getWindowStart().toEpochMilli();
+        long xMax = scene.getWindowEnd().toEpochMilli();
 
         Map<String, Object> view = new LinkedHashMap<>();
         view.put("viewMode", "track");
         view.put("sceneRank", scene.getRank());
-        view.put("title", "场景 " + scene.getRank() + " · 方位-时间轨迹");
+        view.put("freqCenterMhz", scene.getFreqCenterMhz());
+        view.put("freqMinMhz", scene.getFreqMinMhz());
+        view.put("freqMaxMhz", scene.getFreqMaxMhz());
+        view.put("title", "场景 " + scene.getRank() + " · " + formatSceneFreqTitle(scene) + "方位-时间轨迹");
         view.put("dateLabel", DATE_LABEL.format(scene.getWindowStart().atZone(zone)));
         view.put("timeRange", CLOCK.format(scene.getWindowStart().atZone(zone))
                 + " — " + CLOCK.format(scene.getWindowEnd().atZone(zone)));
@@ -535,7 +536,7 @@ public class VisualizationService {
         return view;
     }
 
-    private Map<String, Object> toTrackPayload(TrackSeries series, String label, String color) {
+    private Map<String, Object> toTrackPayload(TrackSeries series, String label, String color, double freqMhz) {
         List<Map<String, Object>> points = new ArrayList<>();
         for (FramePoint fp : series.getFrames()) {
             Map<String, Object> p = new LinkedHashMap<>();
@@ -548,6 +549,10 @@ public class VisualizationService {
         track.put("label", label);
         track.put("role", "target");
         track.put("color", color);
+        track.put("meanBearing", round1(series.getMeanBearing()));
+        if (Double.isFinite(freqMhz)) {
+            track.put("freqMhz", round3(freqMhz));
+        }
         track.put("points", points);
         return track;
     }
@@ -651,6 +656,26 @@ public class VisualizationService {
 
     private static double round3(double v) {
         return Math.round(v * 1000.0) / 1000.0;
+    }
+
+    /** 轨迹图标题中的频率段，便于与全量散点图例对照。 */
+    private static String formatSceneFreqTitle(QualityScene scene) {
+        if (scene == null) {
+            return "";
+        }
+        double min = scene.getFreqMinMhz();
+        double max = scene.getFreqMaxMhz();
+        double center = scene.getFreqCenterMhz();
+        if (Double.isFinite(min) && Double.isFinite(max) && Math.abs(max - min) > 0.001) {
+            return String.format(java.util.Locale.ROOT, "%.3f–%.3f MHz · ", min, max);
+        }
+        if (Double.isFinite(center) && center > 0) {
+            return String.format(java.util.Locale.ROOT, "%.3f MHz · ", center);
+        }
+        if (Double.isFinite(min) && min > 0) {
+            return String.format(java.util.Locale.ROOT, "%.3f MHz · ", min);
+        }
+        return "";
     }
 
     private List<DetectionPoint> annotationSample(List<DetectionPoint> inWindow) {

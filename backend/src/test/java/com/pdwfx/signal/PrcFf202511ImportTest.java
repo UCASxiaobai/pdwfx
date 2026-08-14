@@ -40,7 +40,7 @@ class PrcFf202511ImportTest {
         DetectSignal withDwell = signals.stream()
                 .filter(s -> s.getSignalDwellMs() > 0d)
                 .findFirst()
-                .orElseThrow(() -> new AssertionError("expected at least one signal with dwell > 0"));;
+                .orElseThrow(() -> new AssertionError("expected at least one signal with dwell > 0"));
         assertTrue(withDwell.getSignalDwellMs() > 0d);
     }
 

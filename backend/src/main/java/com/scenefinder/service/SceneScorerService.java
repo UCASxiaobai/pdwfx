@@ -102,7 +102,7 @@ public class SceneScorerService {
         return result;
     }
 
-    /** 在单一频段块内滑动时间窗，生成候选 ScoredWindow 列表。 */
+    /** 在单一频段块内生成候选时间窗（滑动或全段单窗）。 */
     private List<ScoredWindow> scoreSlidingWindows(
             List<BearingTrack> tracks,
             Map<Integer, Double> dominantFreqByTrack,
@@ -113,6 +113,22 @@ public class SceneScorerService {
                 .orElseThrow(() -> new IllegalStateException("tracks must not be empty"));
         Instant maxTime = tracks.stream().map(BearingTrack::endTime).max(Instant::compareTo)
                 .orElseThrow(() -> new IllegalStateException("tracks must not be empty"));
+
+        long spanMillis = maxTime.toEpochMilli() - minTime.toEpochMilli();
+        long minSpanMillis = Math.max(1000L, Math.round(props.getMinTrackSeconds() * 1000.0));
+        if (spanMillis < minSpanMillis) {
+            return Collections.emptyList();
+        }
+
+        // 流式全段窗：每频段只评 [min,max] 一次
+        if (props.isFullSpanWindow()) {
+            List<BearingTrack> inWindow = qualifyingTracks(tracks, minTime, maxTime, props);
+            if (inWindow.size() < props.getMinTracksInScene()) {
+                return Collections.emptyList();
+            }
+            return Collections.singletonList(
+                    buildScoredWindow(minTime, maxTime, inWindow, dominantFreqByTrack, props, freqBandId));
+        }
 
         long windowMillis = Math.round(props.getWindowSeconds() * 1000.0);
         long stepMillis = Math.max(1, Math.round(props.getWindowStepSeconds() * 1000.0));

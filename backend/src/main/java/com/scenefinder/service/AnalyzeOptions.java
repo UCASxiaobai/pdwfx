@@ -28,6 +28,11 @@ public class AnalyzeOptions {
     private final String outputDir;
     /** 是否构建全量频段散点（importScatter），关闭可加快场景筛选 */
     private final Boolean enableImportScatter;
+    /**
+     * 流式全段窗：每个频段只评 [minTime,maxTime] 一次，不做滑动窗。
+     * null 表示不覆盖配置默认值。
+     */
+    private final Boolean fullSpanWindow;
 
     public AnalyzeOptions(
             Double frameSeconds,
@@ -50,7 +55,8 @@ public class AnalyzeOptions {
             Double sceneFreqBandGapMhz,
             Double mergeMaxGapSeconds,
             String outputDir,
-            Boolean enableImportScatter
+            Boolean enableImportScatter,
+            Boolean fullSpanWindow
     ) {
         this.frameSeconds = frameSeconds;
         this.bearingClusterGapDeg = bearingClusterGapDeg;
@@ -73,12 +79,13 @@ public class AnalyzeOptions {
         this.mergeMaxGapSeconds = mergeMaxGapSeconds;
         this.outputDir = outputDir;
         this.enableImportScatter = enableImportScatter;
+        this.fullSpanWindow = fullSpanWindow;
     }
 
     public static AnalyzeOptions defaults() {
         return new AnalyzeOptions(
                 null, null, null, null, null, null, null, null, null, null, null, null, null,
-                null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null);
     }
 
     public Double getFrameSeconds() {
@@ -163,5 +170,9 @@ public class AnalyzeOptions {
 
     public Boolean getEnableImportScatter() {
         return enableImportScatter;
+    }
+
+    public Boolean getFullSpanWindow() {
+        return fullSpanWindow;
     }
 }

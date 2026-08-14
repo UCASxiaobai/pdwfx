@@ -15,12 +15,13 @@
           :class="{ active: tab.rank === activeRank }"
           @click="selectTab(tab.rank)"
         >
-          {{ formatSceneLabel(tab.rank, tab.sceneType) }}
+          {{ formatSceneLabel(tab.rank, tab.sceneType, tab) }}
         </button>
       </div>
       <div class="panel">
         <div class="panel-title">
           <strong>{{ current?.title || panelTitleFallback }}</strong>
+          <span v-if="currentFreqLabel" class="freq-badge">{{ currentFreqLabel }}</span>
           <span>{{ panelMeta }}</span>
         </div>
         <div v-if="!current" class="viz-empty inline">该场景暂无预筛轨迹数据</div>
@@ -37,7 +38,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import * as echarts from "echarts";
 import { formatPeriodSecMsUs } from "../scene/sceneFormat.js";
-import { formatSceneLabel } from "../scene/sceneFilters.js";
+import { formatSceneFreq, formatSceneLabel } from "../scene/sceneFilters.js";
 
 const props = defineProps({
   sceneTabs: { type: Array, default: () => [] },
@@ -61,7 +62,19 @@ const viewByRank = computed(() => {
     const rank = Number(v.sceneRank);
     if (!Number.isFinite(rank)) continue;
     const tab = props.sceneTabs.find((t) => Number(t.rank) === rank);
-    map.set(rank, tab ? { ...v, sceneRank: rank, sceneType: tab.sceneType } : { ...v, sceneRank: rank });
+    map.set(
+      rank,
+      tab
+        ? {
+            ...v,
+            sceneRank: rank,
+            sceneType: tab.sceneType,
+            freqCenterMhz: v.freqCenterMhz ?? tab.freqCenterMhz,
+            freqMinMhz: v.freqMinMhz ?? tab.freqMinMhz,
+            freqMaxMhz: v.freqMaxMhz ?? tab.freqMaxMhz
+          }
+        : { ...v, sceneRank: rank }
+    );
   }
   return map;
 });
@@ -78,10 +91,18 @@ const currentTab = computed(() => {
   return props.sceneTabs.find((t) => Number(t.rank) === want) || null;
 });
 
+const currentFreqLabel = computed(() => {
+  const v = current.value;
+  const fromView = formatSceneFreq(v);
+  if (fromView) return fromView;
+  return formatSceneFreq(currentTab.value);
+});
+
 const panelTitleFallback = computed(() => {
   const tab = currentTab.value;
   if (!tab) return "—";
-  return `场景 #${tab.rank}`;
+  const freq = formatSceneFreq(tab);
+  return freq ? `场景 #${tab.rank} · ${freq}` : `场景 #${tab.rank}`;
 });
 
 function selectTab(rank) {
@@ -114,7 +135,7 @@ const chartHint = computed(() => {
       ? "仅显示已识别轮询目标的 burst 点位（按目标分色）。"
       : "散点为场景窗内原始检测方位。";
   }
-  return "按时间帧聚合目标方位（xhfw）：目标1~N 为各代表轨迹。";
+  return "按时间帧聚合目标方位（xhfw）；有信号分析结果时图例显示「目标N-类型」。";
 });
 
 watch(
@@ -293,6 +314,15 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 .panel-title strong { font-size: 13px; color: #111827; }
+.freq-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 600;
+}
 .chart-box { width: 100%; height: 360px; }
 .date-foot { text-align: right; font-size: 11px; color: #6b7280; margin: 4px 0 0; }
 .scene-note { font-size: 11px; color: #4b5563; margin: 4px 0 0; }

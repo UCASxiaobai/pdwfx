@@ -75,7 +75,8 @@ public class CliAnalyzeRunner implements ApplicationRunner {
                 parseDouble(args, "sceneFreqBandGapMhz"),
                 parseDouble(args, "mergeMaxGapSeconds"),
                 args.containsOption("outputDir") ? args.getOptionValues("outputDir").get(0) : null,
-                null
+                null,
+                parseBoolean(args, "fullSpanWindow")
         );
 
         SceneFinderResult result = sceneFinderService.analyze(csvPath, options);
@@ -99,5 +100,12 @@ public class CliAnalyzeRunner implements ApplicationRunner {
             return null;
         }
         return Integer.parseInt(args.getOptionValues(name).get(0));
+    }
+
+    private Boolean parseBoolean(ApplicationArguments args, String name) {
+        if (!args.containsOption(name)) {
+            return null;
+        }
+        return Boolean.parseBoolean(args.getOptionValues(name).get(0));
     }
 }

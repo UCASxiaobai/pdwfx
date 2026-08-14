@@ -17,9 +17,18 @@ public class StreamResultStore {
     private final CopyOnWriteArrayList<StreamBatchResult> recent = new CopyOnWriteArrayList<>();
     private static final int MAX_RECENT = 50;
 
+    /** 按 batchId upsert，支持分析过程中更新状态而不产生重复条目。 */
     public void put(StreamBatchResult result) {
         if (result == null || result.getStreamBatchId() == null) return;
-        byId.put(result.getStreamBatchId(), result);
+        String id = result.getStreamBatchId();
+        byId.put(id, result);
+        for (int i = 0; i < recent.size(); i++) {
+            StreamBatchResult old = recent.get(i);
+            if (old != null && id.equals(old.getStreamBatchId())) {
+                recent.set(i, result);
+                return;
+            }
+        }
         recent.add(0, result);
         while (recent.size() > MAX_RECENT) {
             recent.remove(recent.size() - 1);

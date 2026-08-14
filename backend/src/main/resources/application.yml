@@ -20,7 +20,7 @@ scene-finder:
   frame-seconds: 0.5
   bearing-cluster-gap-deg: 4.0
   association-gate-deg: 6.0
-  max-missed-frames: 2
+  max-missed-frames: 10
   min-track-seconds: 30.0
   min-track-points: 20
   max-track-bearing-rate-deg-per-sec: 12.0

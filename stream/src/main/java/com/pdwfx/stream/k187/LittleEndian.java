@@ -1,9 +1,14 @@
 package com.pdwfx.stream.k187;
 
+import java.nio.Buffer;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
-/** 小端二进制读取（对齐 cet36 StructSerializer 常用布局）。 */
+/**
+ * 小端二进制读取（对齐 cet36 StructSerializer 常用布局）。
+ * <p>position/limit 必须经 {@link Buffer} 调用：JDK9+ 在 ByteBuffer 上covariant 重写了这些方法，
+ * 若用高版本 JDK 编译却在 JDK8 运行，会 NoSuchMethodError。</p>
+ */
 public final class LittleEndian {
     private final ByteBuffer buf;
 
@@ -16,7 +21,7 @@ public final class LittleEndian {
     }
 
     public int position() { return buf.position(); }
-    public void position(int p) { buf.position(p); }
+    public void position(int p) { ((Buffer) buf).position(p); }
     public int remaining() { return buf.remaining(); }
 
     public byte readU8() { return buf.get(); }
@@ -34,5 +39,9 @@ public final class LittleEndian {
         byte[] a = new byte[n];
         buf.get(a);
         return a;
+    }
+
+    public void skipBytes(int n) {
+        ((Buffer) buf).position(buf.position() + n);
     }
 }

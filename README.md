@@ -3,6 +3,7 @@
 ## 目录结构
 
 - `backend`：SpringBoot 后端（Excel导入 + 网络划分 + 目标识别）
+- `stream`：独立流式模块（TCP 收包 / 落盘切批 / 调用分析服务）
 - `frontend`：Vue3 前端（网络列表 + 网络详情 + 多层可视化）
 - `docs/external-integration.md`：**外部模块集成**（输入/输出、REST、Java Facade）
 - `docs/interface-api.md`：完整三段式接口文档
@@ -68,6 +69,24 @@ npm run dev
 ```
 
 默认端口：`5173`
+
+### 3) 启动流式模块（独立进程，可选）
+
+先启 backend，再启 stream：
+
+```bash
+cd stream
+mvn spring-boot:run
+```
+
+或 `scripts/start-stream.bat`。HTTP `19080` / TCP `19090`。说明见 `stream/README.md`。
+
+#### IntelliJ IDEA（常见报错）
+
+1. Maven User settings 可指向项目根 `maven-settings.xml`（阿里云镜像，解决 `xmlbeans` 等依赖拉不下来）
+2. 右键 `stream/pom.xml` → **Add as Maven Project**，确认模块 `pdwfx-stream`
+3. 运行配置选 **`StreamApplication`**（推荐 Maven），或 **`StreamApplication (main)`**
+4. 主类必须是 `com.pdwfx.stream.StreamApplication`（**不要**带 `.java`），模块选 `pdwfx-stream`（不要选 `signal-analysis`）
 
 ## 接口
 

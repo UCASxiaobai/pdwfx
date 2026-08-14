@@ -18,7 +18,7 @@
           :class="{ active: tab.rank === activeRank }"
           @click="selectTab(tab.rank)"
         >
-          {{ formatSceneLabel(tab.rank, tab.sceneType) }}
+          {{ formatSceneLabel(tab.rank, tab.sceneType, tab) }}
         </button>
       </div>
 

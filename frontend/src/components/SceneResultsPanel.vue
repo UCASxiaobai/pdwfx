@@ -14,7 +14,7 @@
               :key="opt.rank"
               :value="String(opt.rank)"
             >
-              {{ formatSceneLabel(opt.rank, opt.sceneType) }}
+              {{ formatSceneLabel(opt.rank, opt.sceneType, opt) }}
             </option>
           </select>
         </label>
@@ -181,6 +181,7 @@ import {
   TARGET_TYPE_OPTIONS,
   aggregateStats,
   alignTrajectoryViewsToSceneTabs,
+  applyStreamTargetTypeLabelsToViews,
   filterReportRows,
   filterScenes,
   buildDisplaySceneTabs,
@@ -270,13 +271,21 @@ const unifiedSceneTabs = computed(() =>
   })
 );
 
-/** 预筛轨迹图与 Tab 按同一预筛选序号对齐 */
-const alignedTrajectoryViews = computed(() =>
-  alignTrajectoryViewsToSceneTabs(
+/** 预筛轨迹图与 Tab 按同一预筛选序号对齐；有明细时叠目标类型 */
+const alignedTrajectoryViews = computed(() => {
+  const views = alignTrajectoryViewsToSceneTabs(
     visualizationPayload.value?.trajectoryViews || [],
     unifiedSceneTabs.value
-  )
-);
+  );
+  const labels = (allRows.value || []).map((r) => ({
+    sceneRank: r.sceneRank,
+    targetType: r.targetType,
+    targetTypeLabel: r.targetTypeLabel || targetTypeLabel(r.targetType),
+    freqMhz: r.networkFreqMhz,
+    meanAzimuthDeg: r.meanAzimuthDeg ?? null
+  }));
+  return applyStreamTargetTypeLabelsToViews(views, labels);
+});
 
 watch(
   unifiedSceneTabs,
@@ -359,21 +368,34 @@ const sceneRankOptions = computed(() => {
   const byRank = new Map();
   for (const s of props.sceneResult?.scenes || []) {
     const rank = Number(s.rank);
-    if (Number.isFinite(rank)) byRank.set(rank, s.sceneType);
+    if (Number.isFinite(rank)) {
+      byRank.set(rank, {
+        rank,
+        sceneType: s.sceneType,
+        freqCenterMhz: s.freqCenterMhz ?? null,
+        freqMinMhz: s.freqMinMhz ?? null,
+        freqMaxMhz: s.freqMaxMhz ?? null
+      });
+    }
   }
   for (const r of allRows.value) {
     const rank = Number(r.sceneRank);
-    if (Number.isFinite(rank) && !byRank.has(rank)) {
-      byRank.set(rank, r.sceneType);
+    if (!Number.isFinite(rank)) continue;
+    if (!byRank.has(rank)) {
+      byRank.set(rank, {
+        rank,
+        sceneType: r.sceneType,
+        freqCenterMhz: r.sceneFreqCenterMhz ?? r.networkFreqMhz ?? null,
+        freqMinMhz: r.sceneFreqMinMhz ?? null,
+        freqMaxMhz: r.sceneFreqMaxMhz ?? null
+      });
     }
   }
   // 筛选下拉只保留本次分析过的预筛选序号，与图/表一致
   const entries = analyzedRanks.value.size
-    ? [...byRank.entries()].filter(([rank]) => analyzedRanks.value.has(rank))
-    : [...byRank.entries()];
-  return sortScenesForDisplay(
-    entries.map(([rank, sceneType]) => ({ rank, sceneType }))
-  );
+    ? [...byRank.values()].filter((s) => analyzedRanks.value.has(s.rank))
+    : [...byRank.values()];
+  return sortScenesForDisplay(entries);
 });
 
 const commLinkOptions = computed(() => uniqueCommLinks(allRows.value));

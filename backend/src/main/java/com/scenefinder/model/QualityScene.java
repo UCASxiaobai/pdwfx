@@ -226,6 +226,32 @@ public class QualityScene {
         return annotation;
     }
 
+    /** 复制本场景并替换时间窗（全段窗模式下对齐整批检测起止）。 */
+    public QualityScene withWindow(Instant newStart, Instant newEnd) {
+        Instant start = newStart != null ? newStart : windowStart;
+        Instant end = newEnd != null ? newEnd : windowEnd;
+        return new QualityScene(
+                rank,
+                sceneType,
+                start,
+                end,
+                freqCenterMhz,
+                freqMinMhz,
+                freqMaxMhz,
+                distinctDeviceCount,
+                score,
+                trackCount,
+                medianSeparationDeg,
+                averageSmoothness,
+                trackIds,
+                pollingPeriodSec,
+                periodicBurstCount,
+                avgBearingsPerBurst,
+                periodicityScore,
+                annotation
+        );
+    }
+
     /** 复制本场景并替换 lane / 轨迹 ID 列表（轮询建轨后写入）。 */
     public QualityScene withTrackIds(List<Integer> trackIds) {
         return new QualityScene(

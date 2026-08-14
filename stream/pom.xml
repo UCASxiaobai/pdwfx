@@ -18,6 +18,8 @@
 
     <properties>
         <java.version>1.8</java.version>
+        <!-- 用高版本 JDK 编译时也按 JDK8 API 签名，避免 ByteBuffer.position 等 covariant 踩坑 -->
+        <maven.compiler.release>8</maven.compiler.release>
     </properties>
 
     <dependencies>

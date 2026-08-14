@@ -46,7 +46,7 @@ public class SceneFinderProperties {
      * 轨迹允许连续丢失的最大帧数。超过则轨迹结束进入“已完成”列表。
      * 与 frameSeconds 相乘可得最长无检测间隔 ≈ maxMissedFrames × frameSeconds 秒。
      */
-    private int maxMissedFrames = 4;
+    private int maxMissedFrames = 10;
 
     /**
      * 确认轨迹的最短持续时间（秒）。短于此的轨迹丢弃，避免噪声片段进入场景评分。
@@ -233,6 +233,12 @@ public class SceneFinderProperties {
      */
     private boolean enableImportScatter = false;
 
+    /**
+     * 全段时间窗：每个频段只对 [minTime,maxTime] 评一次分，不做滑动窗。
+     * 流式封批分析应开启；事后主流程默认关闭。
+     */
+    private boolean fullSpanWindow = false;
+
     // ---------- 输出 ----------
 
     /**
@@ -404,6 +410,7 @@ public class SceneFinderProperties {
         setMaxVisualizationScatterPoints(source.getMaxVisualizationScatterPoints());
         setInlineVisualizationMaxDetections(source.getInlineVisualizationMaxDetections());
         setEnableImportScatter(source.isEnableImportScatter());
+        setFullSpanWindow(source.isFullSpanWindow());
         setOutputDir(source.getOutputDir());
     }
 
@@ -629,5 +636,13 @@ public class SceneFinderProperties {
 
     public void setEnableImportScatter(boolean enableImportScatter) {
         this.enableImportScatter = enableImportScatter;
+    }
+
+    public boolean isFullSpanWindow() {
+        return fullSpanWindow;
+    }
+
+    public void setFullSpanWindow(boolean fullSpanWindow) {
+        this.fullSpanWindow = fullSpanWindow;
     }
 }

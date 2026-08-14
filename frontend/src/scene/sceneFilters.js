@@ -36,7 +36,10 @@ export function buildDisplaySceneTabs(scenes, opts = {}) {
   const { allowedRanks = null, requireAnalyzedRanks = null } = opts;
   let list = (scenes || []).map((s) => ({
     rank: Number(s.rank ?? s.sceneRank),
-    sceneType: s.sceneType
+    sceneType: s.sceneType,
+    freqCenterMhz: s.freqCenterMhz ?? s.freqCenter ?? null,
+    freqMinMhz: s.freqMinMhz ?? s.freqMin ?? null,
+    freqMaxMhz: s.freqMaxMhz ?? s.freqMax ?? null
   }));
   if (allowedRanks?.size) {
     list = list.filter((t) => allowedRanks.has(t.rank));
@@ -59,7 +62,14 @@ export function alignTrajectoryViewsToSceneTabs(trajectoryViews, sceneTabs) {
       const rank = Number(t.rank);
       const view = byRank.get(rank);
       if (!view) return null;
-      return { ...view, sceneRank: rank, sceneType: t.sceneType };
+      return {
+        ...view,
+        sceneRank: rank,
+        sceneType: t.sceneType,
+        freqCenterMhz: view.freqCenterMhz ?? t.freqCenterMhz ?? null,
+        freqMinMhz: view.freqMinMhz ?? t.freqMinMhz ?? null,
+        freqMaxMhz: view.freqMaxMhz ?? t.freqMaxMhz ?? null
+      };
     })
     .filter(Boolean);
 }
@@ -91,9 +101,35 @@ export function sortTrajectoryViewsForDisplay(list) {
   return [...(list || [])].sort(compareTrajectoryViewsForDisplay);
 }
 
-/** 场景筛选/表格合并列：#1 轮询 */
-export function formatSceneLabel(rank, sceneType) {
-  return `#${rank} ${sceneTypeLabel(sceneType)}`;
+/** 场景筛选/表格合并列：#1 轮询 · 123.456 MHz */
+export function formatSceneLabel(rank, sceneType, freqInfo = null) {
+  const base = `#${rank} ${sceneTypeLabel(sceneType)}`;
+  const freq = formatSceneFreq(freqInfo);
+  return freq ? `${base} · ${freq}` : base;
+}
+
+/** 与全局散点图例一致的场景频点标注 */
+export function formatSceneFreq(s) {
+  if (s == null) return "";
+  if (typeof s === "number") {
+    return Number.isFinite(s) && s > 0 ? `${formatFreq(s)} MHz` : "";
+  }
+  const center = Number(s.freqCenterMhz ?? s.freqCenter);
+  const min = Number(s.freqMinMhz ?? s.freqMin);
+  const max = Number(s.freqMaxMhz ?? s.freqMax);
+  if (Number.isFinite(min) && Number.isFinite(max) && Math.abs(max - min) > 0.001) {
+    return `${formatFreq(min)}–${formatFreq(max)} MHz`;
+  }
+  if (Number.isFinite(center) && center > 0) {
+    return `${formatFreq(center)} MHz`;
+  }
+  if (Number.isFinite(min) && min > 0) {
+    return `${formatFreq(min)} MHz`;
+  }
+  if (Number.isFinite(max) && max > 0) {
+    return `${formatFreq(max)} MHz`;
+  }
+  return "";
 }
 
 export function targetTypeLabel(t) {
@@ -112,6 +148,74 @@ export function commModeLabel(mode) {
 export function formatFreq(v, digits = 3) {
   const n = Number(v);
   return Number.isFinite(n) ? n.toFixed(digits) : "—";
+}
+
+/**
+ * 将信号分析得到的目标类型叠到场景方位轨迹（目标1 → 目标1-飞机）。
+ * 优先按平均方位匹配；否则按频点；再退化为同场景顺序。
+ */
+export function applyStreamTargetTypeLabels(view, labels) {
+  if (!view) return view;
+  const rank = Number(view.sceneRank);
+  const sceneLabels = (labels || []).filter((l) => Number(l.sceneRank) === rank);
+  if (!sceneLabels.length) return view;
+
+  const used = new Set();
+  const pickLabel = (series, index) => {
+    const mean = Number(series?.meanBearing);
+    const freq = Number(series?.freqMhz);
+    let best = null;
+    let bestScore = Infinity;
+    for (let i = 0; i < sceneLabels.length; i++) {
+      if (used.has(i)) continue;
+      const L = sceneLabels[i];
+      const az = Number(L.meanAzimuthDeg);
+      const lf = Number(L.freqMhz);
+      let score;
+      if (Number.isFinite(mean) && Number.isFinite(az)) {
+        score = Math.abs(((mean - az + 540) % 360) - 180);
+      } else if (Number.isFinite(freq) && Number.isFinite(lf)) {
+        score = Math.abs(freq - lf) * 100;
+      } else {
+        score = Math.abs(i - index) + 500;
+      }
+      if (score < bestScore) {
+        bestScore = score;
+        best = { idx: i, label: L };
+      }
+    }
+    return best;
+  };
+
+  const rename = (series, index, prefix) => {
+    const hit = pickLabel(series, index);
+    if (!hit) return series;
+    used.add(hit.idx);
+    const typeText =
+      hit.label.targetTypeLabel
+      || targetTypeLabel(hit.label.targetType)
+      || "未知";
+    return {
+      ...series,
+      targetType: hit.label.targetType || series.targetType,
+      targetTypeLabel: typeText,
+      label: `${prefix}${index + 1}-${typeText}`
+    };
+  };
+
+  const next = { ...view };
+  if (Array.isArray(view.tracks) && view.tracks.length) {
+    next.tracks = view.tracks.map((t, i) => rename(t, i, "目标"));
+  }
+  if (Array.isArray(view.pollingTargets) && view.pollingTargets.length) {
+    used.clear();
+    next.pollingTargets = view.pollingTargets.map((t, i) => rename(t, i, "轮询目标"));
+  }
+  return next;
+}
+
+export function applyStreamTargetTypeLabelsToViews(views, labels) {
+  return (views || []).map((v) => applyStreamTargetTypeLabels(v, labels));
 }
 
 export function formatTime(iso) {

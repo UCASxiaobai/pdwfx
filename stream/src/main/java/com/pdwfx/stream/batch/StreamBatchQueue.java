@@ -9,6 +9,12 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+/**
+ * 已封存 CSV 的分析任务队列。
+ * <p>{@link StreamBatchFileWriter} 封批后 {@link #offer}；
+ * {@link com.pdwfx.stream.analyze.StreamBatchAnalyzer} 轮询 {@link #poll} 并串行分析。
+ * 队列满时 {@link #isPaused()} 为 true，TCP 侧暂停读包以免堆积。</p>
+ */
 @Component
 public class StreamBatchQueue {
 
@@ -21,6 +27,7 @@ public class StreamBatchQueue {
         this.queue = new LinkedBlockingQueue<>(maxQueueFiles);
     }
 
+    /** 封批完成后入队；失败则标记暂停收包 */
     public boolean offer(Path file) {
         boolean ok = queue.offer(file);
         if (!ok) {

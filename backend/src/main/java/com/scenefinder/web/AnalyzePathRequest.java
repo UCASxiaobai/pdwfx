@@ -25,6 +25,7 @@ public class AnalyzePathRequest {
     private Double sceneFreqBandGapMhz;
     private Double mergeMaxGapSeconds;
     private String outputDir;
+    private Boolean fullSpanWindow;
 
     public String getCsvPath() {
         return csvPath;
@@ -194,6 +195,14 @@ public class AnalyzePathRequest {
         this.outputDir = outputDir;
     }
 
+    public Boolean getFullSpanWindow() {
+        return fullSpanWindow;
+    }
+
+    public void setFullSpanWindow(Boolean fullSpanWindow) {
+        this.fullSpanWindow = fullSpanWindow;
+    }
+
     public AnalyzeOptions toOptions() {
         return new AnalyzeOptions(
                 frameSeconds, bearingClusterGapDeg, associationGateDeg, maxMissedFrames,
@@ -201,7 +210,8 @@ public class AnalyzePathRequest {
                 minTracksInScene, topKScenes, topKTrackScenes, topKPollingScenes,
                 minSeparationDeg, freqMin, freqMax, freqTolerance,
                 freqClusterGapMhz, sceneFreqBandGapMhz, mergeMaxGapSeconds, outputDir,
-                null
+                null,
+                fullSpanWindow
         );
     }
 }

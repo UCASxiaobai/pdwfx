@@ -21,14 +21,16 @@ public final class SceneUploadParams {
             Integer topKTrackScenes,
             Integer topKPollingScenes,
             String outputDir,
-            Boolean enableImportScatter
+            Boolean enableImportScatter,
+            Boolean fullSpanWindow
     ) {
         return new AnalyzeOptions(
                 null, null, null, null, null, null,
                 windowSeconds, windowStepSeconds, minTracksInScene,
                 topKScenes, topKTrackScenes, topKPollingScenes,
                 null, freqMin, freqMax, freqTolerance, null, null, null, outputDir,
-                enableImportScatter
+                enableImportScatter,
+                fullSpanWindow
         );
     }
 }

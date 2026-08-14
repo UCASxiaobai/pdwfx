@@ -396,68 +396,91 @@ public class MultiDevicePollingDetectorService {
             List<DetectionPoint> band,
             SceneFinderProperties props
     ) {
+        Instant minTime = bursts.get(0).getCenterTime();
+        Instant maxTime = bursts.get(bursts.size() - 1).getCenterTime();
+        long spanMillis = maxTime.toEpochMilli() - minTime.toEpochMilli();
+        if (spanMillis < 1000L) {
+            return Collections.emptyList();
+        }
+
+        List<ScoredPollingWindow> scored = new ArrayList<>();
+        if (props.isFullSpanWindow()) {
+            ScoredPollingWindow one = scoreOnePollingWindow(bursts, minTime, maxTime, props);
+            if (one != null) {
+                scored.add(one);
+            }
+            return scored;
+        }
+
         long windowMillis = Math.round(props.getPollingWindowSeconds() * 1000.0);
         long stepMillis = Math.max(1, Math.round(props.getPollingWindowStepSeconds() * 1000.0));
 
-        Instant minTime = bursts.get(0).getCenterTime();
-        Instant maxTime = bursts.get(bursts.size() - 1).getCenterTime();
-
-        List<ScoredPollingWindow> scored = new ArrayList<>();
         for (long startMillis = minTime.toEpochMilli();
              startMillis + windowMillis <= maxTime.toEpochMilli() + stepMillis;
              startMillis += stepMillis) {
             Instant windowStart = Instant.ofEpochMilli(startMillis);
             Instant windowEnd = Instant.ofEpochMilli(startMillis + windowMillis);
-
-            List<MultiBearingBurst> inWindow = bursts.stream()
-                    .filter(b -> !b.getCenterTime().isBefore(windowStart) && !b.getCenterTime().isAfter(windowEnd))
-                    .collect(Collectors.toList());
-            if (inWindow.size() < props.getPollingMinBurstsInWindow()) {
-                continue;
+            ScoredPollingWindow one = scoreOnePollingWindow(bursts, windowStart, windowEnd, props);
+            if (one != null) {
+                scored.add(one);
             }
-
-            PeriodEstimate period = estimatePeriod(inWindow, props);
-            if (period == null) {
-                continue;
-            }
-            List<MultiBearingBurst> gridAligned = alignMultiBurstsToWindow(
-                    inWindow, windowStart, windowEnd, period.getPeriodSec(), props);
-            if (!validatePeriodicMultiPointPattern(gridAligned, props)) {
-                continue;
-            }
-
-            List<Double> spans = gridAligned.stream().map(b -> b.getMetrics().getBearingSpanDeg()).sorted().collect(Collectors.toList());
-            double medianSpan = spans.get(spans.size() / 2);
-            double avgBearings = gridAligned.stream().mapToInt(b -> b.getMetrics().getBearingClusterCount()).average().orElse(0);
-            int typicalBearings = (int) Math.round(avgBearings);
-
-            double burstBonus = Math.min(gridAligned.size() / (double) props.getPollingMinBurstsInWindow(), 2.5);
-            double periodBonus = period.getPeriodicityScore() * 2.0;
-            double spanBonus = Math.min(medianSpan / 30.0, 1.5);
-            double bearingBonus = Math.min(typicalBearings / 4.0, 1.5);
-            double score = 2.0 * burstBonus + periodBonus + spanBonus + bearingBonus;
-
-            double freqCenter = gridAligned.stream().mapToDouble(b -> b.getMetrics().getFreqCenterMhz()).average().orElse(0);
-            double freqMin = gridAligned.stream().mapToDouble(b -> b.getMetrics().getFreqMinMhz()).min().orElse(0);
-            double freqMax = gridAligned.stream().mapToDouble(b -> b.getMetrics().getFreqMaxMhz()).max().orElse(0);
-
-            scored.add(new ScoredPollingWindow(
-                    windowStart,
-                    windowEnd,
-                    score,
-                    gridAligned.size(),
-                    medianSpan,
-                    period.getPeriodSec(),
-                    avgBearings,
-                    typicalBearings,
-                    period.getPeriodicityScore(),
-                    freqCenter,
-                    freqMin,
-                    freqMax,
-                    gridAligned
-            ));
         }
         return scored;
+    }
+
+    private ScoredPollingWindow scoreOnePollingWindow(
+            List<MultiBearingBurst> bursts,
+            Instant windowStart,
+            Instant windowEnd,
+            SceneFinderProperties props
+    ) {
+        List<MultiBearingBurst> inWindow = bursts.stream()
+                .filter(b -> !b.getCenterTime().isBefore(windowStart) && !b.getCenterTime().isAfter(windowEnd))
+                .collect(Collectors.toList());
+        if (inWindow.size() < props.getPollingMinBurstsInWindow()) {
+            return null;
+        }
+
+        PeriodEstimate period = estimatePeriod(inWindow, props);
+        if (period == null) {
+            return null;
+        }
+        List<MultiBearingBurst> gridAligned = alignMultiBurstsToWindow(
+                inWindow, windowStart, windowEnd, period.getPeriodSec(), props);
+        if (!validatePeriodicMultiPointPattern(gridAligned, props)) {
+            return null;
+        }
+
+        List<Double> spans = gridAligned.stream().map(b -> b.getMetrics().getBearingSpanDeg()).sorted().collect(Collectors.toList());
+        double medianSpan = spans.get(spans.size() / 2);
+        double avgBearings = gridAligned.stream().mapToInt(b -> b.getMetrics().getBearingClusterCount()).average().orElse(0);
+        int typicalBearings = (int) Math.round(avgBearings);
+
+        double burstBonus = Math.min(gridAligned.size() / (double) props.getPollingMinBurstsInWindow(), 2.5);
+        double periodBonus = period.getPeriodicityScore() * 2.0;
+        double spanBonus = Math.min(medianSpan / 30.0, 1.5);
+        double bearingBonus = Math.min(typicalBearings / 4.0, 1.5);
+        double score = 2.0 * burstBonus + periodBonus + spanBonus + bearingBonus;
+
+        double freqCenter = gridAligned.stream().mapToDouble(b -> b.getMetrics().getFreqCenterMhz()).average().orElse(0);
+        double freqMin = gridAligned.stream().mapToDouble(b -> b.getMetrics().getFreqMinMhz()).min().orElse(0);
+        double freqMax = gridAligned.stream().mapToDouble(b -> b.getMetrics().getFreqMaxMhz()).max().orElse(0);
+
+        return new ScoredPollingWindow(
+                windowStart,
+                windowEnd,
+                score,
+                gridAligned.size(),
+                medianSpan,
+                period.getPeriodSec(),
+                avgBearings,
+                typicalBearings,
+                period.getPeriodicityScore(),
+                freqCenter,
+                freqMin,
+                freqMax,
+                gridAligned
+        );
     }
 
     private PeriodEstimate estimatePeriod(List<MultiBearingBurst> bursts, SceneFinderProperties props) {

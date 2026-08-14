@@ -100,14 +100,15 @@ public class SceneFinderController {
             @RequestParam(value = "topKTrackScenes", required = false) Integer topKTrackScenes,
             @RequestParam(value = "topKPollingScenes", required = false) Integer topKPollingScenes,
             @RequestParam(value = "outputDir", required = false) String outputDir,
-            @RequestParam(value = "enableImportScatter", required = false) Boolean enableImportScatter
+            @RequestParam(value = "enableImportScatter", required = false) Boolean enableImportScatter,
+            @RequestParam(value = "fullSpanWindow", required = false) Boolean fullSpanWindow
     ) throws IOException {
         Path input = uploadStorageService.storeUploads(file, files);
         SceneUploadClassifierService.UploadClassification classified = uploadClassifierService.classify(input);
         AnalyzeOptions options = SceneUploadParams.toOptions(
                 freqMin, freqMax, freqTolerance, windowSeconds, windowStepSeconds,
                 minTracksInScene, topKScenes, topKTrackScenes, topKPollingScenes, outputDir,
-                enableImportScatter
+                enableImportScatter, fullSpanWindow
         );
         SceneFinderResult result = sceneFinderService.analyze(classified.getPdwInputPath(), options);
         attachExternalFixes(result, classified);

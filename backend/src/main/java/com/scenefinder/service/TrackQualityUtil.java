@@ -21,7 +21,12 @@ final class TrackQualityUtil {
         List<List<TrackObservation>> segments = splitOnJumps(
                 track.getObservations(),
                 props.getTrackJumpSplitDegPerSec(),
-                props.getTrackJumpSplitGapSec());
+                props.getTrackJumpSplitGapSec(),
+                Math.max(0.25, props.getFrameSeconds()));
+        segments = coalesceNearbySegments(
+                segments,
+                props.getTrackJumpSplitGapSec(),
+                props.getAssociationGateDeg());
         List<BearingTrack> out = new ArrayList<>();
         int nextId = startId;
         for (List<TrackObservation> segment : segments) {
@@ -57,7 +62,8 @@ final class TrackQualityUtil {
     private static List<List<TrackObservation>> splitOnJumps(
             List<TrackObservation> observations,
             double maxStepRateDegPerSec,
-            double maxGapSec
+            double maxGapSec,
+            double minDtForRateSec
     ) {
         List<List<TrackObservation>> segments = new ArrayList<>();
         if (observations == null || observations.isEmpty()) {
@@ -72,11 +78,17 @@ final class TrackQualityUtil {
             TrackObservation prev = sorted.get(i - 1);
             TrackObservation now = sorted.get(i);
             double dt = (now.getTime().toEpochMilli() - prev.getTime().toEpochMilli()) / 1000.0;
-            double rate = 0;
-            if (dt > 0.001) {
-                rate = Math.abs(BearingMath.shortestDelta(prev.getBearingDeg(), now.getBearingDeg())) / dt;
+            boolean split = false;
+            if (dt > maxGapSec) {
+                split = true;
+            } else if (dt >= minDtForRateSec) {
+                // 同帧/亚帧多点会产生虚假超高角速度；仅在足够时间基线上判跳变
+                double rate = Math.abs(BearingMath.shortestDelta(prev.getBearingDeg(), now.getBearingDeg())) / dt;
+                if (rate > maxStepRateDegPerSec) {
+                    split = true;
+                }
             }
-            if (dt > maxGapSec || rate > maxStepRateDegPerSec) {
+            if (split) {
                 segments.add(current);
                 current = new ArrayList<>();
             }
@@ -86,6 +98,45 @@ final class TrackQualityUtil {
             segments.add(current);
         }
         return segments;
+    }
+
+    /**
+     * 将时间间隙不大、方位可衔接的相邻片段合并，避免被误切后因过短被门控丢掉。
+     */
+    private static List<List<TrackObservation>> coalesceNearbySegments(
+            List<List<TrackObservation>> segments,
+            double maxGapSec,
+            double maxBearingDeltaDeg
+    ) {
+        if (segments == null || segments.size() <= 1) {
+            return segments;
+        }
+        List<List<TrackObservation>> out = new ArrayList<>();
+        List<TrackObservation> cur = new ArrayList<>(segments.get(0));
+        for (int i = 1; i < segments.size(); i++) {
+            List<TrackObservation> next = segments.get(i);
+            if (cur.isEmpty() || next.isEmpty()) {
+                if (!cur.isEmpty()) {
+                    out.add(cur);
+                }
+                cur = new ArrayList<>(next);
+                continue;
+            }
+            TrackObservation a = cur.get(cur.size() - 1);
+            TrackObservation b = next.get(0);
+            double dt = (b.getTime().toEpochMilli() - a.getTime().toEpochMilli()) / 1000.0;
+            double delta = Math.abs(BearingMath.shortestDelta(a.getBearingDeg(), b.getBearingDeg()));
+            if (dt >= 0 && dt <= maxGapSec && delta <= maxBearingDeltaDeg) {
+                cur.addAll(next);
+            } else {
+                out.add(cur);
+                cur = new ArrayList<>(next);
+            }
+        }
+        if (!cur.isEmpty()) {
+            out.add(cur);
+        }
+        return out;
     }
 
     private static BearingTrack fromSegment(int id, List<TrackObservation> segment) {
