@@ -42,4 +42,10 @@ public class StreamResultStore {
     public List<StreamBatchResult> listRecent() {
         return Collections.unmodifiableList(new ArrayList<>(recent));
     }
+
+    /** 清空内存中的批结果列表（重启接收）。 */
+    public void clear() {
+        byId.clear();
+        recent.clear();
+    }
 }

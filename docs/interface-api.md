@@ -24,6 +24,7 @@
 | `analyzeFull(signals, tol)` | 一次返回全部网络详情（大文件慎用） | `NetworkAnalysisResponse` |
 | `getNetworkDetail(sessionId, networkId)` | **输出**：单网目标、周期、burst、图表序列 | `NetworkView` |
 | `getNetworkResult(sessionId, networkId)` | **输出**：单网业务结果（含 **networkType**、通信链，无图表） | `NetworkResultResponse` |
+| `exportDetections(sessionId, includeUnassigned)` | **输出**：逐条编批（方位/时间/频率/类型/波道） | `DetectionBatchResponse` |
 | `preloadNetworks(sessionId, ids)` | 预构建指定网，回写列表摘要 | `AnalyzeSessionResponse` |
 | `preloadAllNetworks(sessionId)` | 预构建全部网（**网络类型/波道**批量研判） | `AnalyzeSessionResponse` |
 

@@ -8,6 +8,7 @@ export const TARGET_TYPE_OPTIONS = [
 export function sceneTypeLabel(t) {
   if (t === "TRACK_CONTINUOUS") return "连续轨迹";
   if (t === "MULTI_DEVICE_POLLING" || t === "POLLING_MULTI_DEVICE") return "轮询";
+  if (t === "COMMAND_NET") return "指挥网二次";
   return t || "—";
 }
 
@@ -152,29 +153,48 @@ export function formatFreq(v, digits = 3) {
 
 /**
  * 将信号分析得到的目标类型叠到场景方位轨迹（目标1 → 目标1-飞机）。
- * 优先按平均方位匹配；否则按频点；再退化为同场景顺序。
+ * 场景图优先按平均方位；换频统一图按频点（多目标可同方位）。
+ * 缺省方位不得当成 0°。
  */
 export function applyStreamTargetTypeLabels(view, labels) {
   if (!view) return view;
   const rank = Number(view.sceneRank);
-  const sceneLabels = (labels || []).filter((l) => Number(l.sceneRank) === rank);
+  let sceneLabels;
+  if (view.unified || !Number.isFinite(rank)) {
+    sceneLabels = labels || [];
+  } else {
+    sceneLabels = (labels || []).filter((l) => Number(l.sceneRank) === rank);
+  }
   if (!sceneLabels.length) return view;
+
+  const finiteNum = (v) => {
+    if (v == null || v === "") return NaN;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : NaN;
+  };
 
   const used = new Set();
   const pickLabel = (series, index) => {
-    const mean = Number(series?.meanBearing);
-    const freq = Number(series?.freqMhz);
+    const mean = finiteNum(series?.meanBearing);
+    const freq = finiteNum(series?.freqMhz ?? series?.seedFreqMhz);
     let best = null;
     let bestScore = Infinity;
     for (let i = 0; i < sceneLabels.length; i++) {
       if (used.has(i)) continue;
       const L = sceneLabels[i];
-      const az = Number(L.meanAzimuthDeg);
-      const lf = Number(L.freqMhz);
+      const az = finiteNum(L.meanAzimuthDeg);
+      const lf = finiteNum(L.freqMhz);
+      const hasAz = Number.isFinite(mean) && Number.isFinite(az);
+      const hasFreq = Number.isFinite(freq) && Number.isFinite(lf);
       let score;
-      if (Number.isFinite(mean) && Number.isFinite(az)) {
+      if (view.unified && hasFreq) {
+        score = Math.abs(freq - lf);
+        if (hasAz) {
+          score += Math.abs(((mean - az + 540) % 360) - 180) * 0.001;
+        }
+      } else if (hasAz) {
         score = Math.abs(((mean - az + 540) % 360) - 180);
-      } else if (Number.isFinite(freq) && Number.isFinite(lf)) {
+      } else if (hasFreq) {
         score = Math.abs(freq - lf) * 100;
       } else {
         score = Math.abs(i - index) + 500;
@@ -188,18 +208,34 @@ export function applyStreamTargetTypeLabels(view, labels) {
   };
 
   const rename = (series, index, prefix) => {
-    const hit = pickLabel(series, index);
-    if (!hit) return series;
+    const enriched = ensureMeanBearing(series);
+    const hit = pickLabel(enriched, index);
+    if (!hit) {
+      const existingType =
+        series.targetTypeLabel || targetTypeLabel(series.targetType);
+      if (existingType && existingType !== "—" && series.label
+          && !String(series.label).includes(existingType)) {
+        return {
+          ...series,
+          label: `${series.label}-${existingType}`
+        };
+      }
+      return series;
+    }
     used.add(hit.idx);
     const typeText =
       hit.label.targetTypeLabel
       || targetTypeLabel(hit.label.targetType)
       || "未知";
+    const base = `${prefix}${index + 1}`;
     return {
-      ...series,
+      ...enriched,
       targetType: hit.label.targetType || series.targetType,
       targetTypeLabel: typeText,
-      label: `${prefix}${index + 1}-${typeText}`
+      channel: hit.label.channel || hit.label.channelLabel || series.channel,
+      channelLabel: hit.label.channelLabel || hit.label.channel || series.channelLabel,
+      targetChannelsUsed: hit.label.targetChannelsUsed || series.targetChannelsUsed,
+      label: `${base}-${typeText}`
     };
   };
 
@@ -211,7 +247,27 @@ export function applyStreamTargetTypeLabels(view, labels) {
     used.clear();
     next.pollingTargets = view.pollingTargets.map((t, i) => rename(t, i, "轮询目标"));
   }
+  if (view.interrogatorOverlay) {
+    next.interrogatorOverlay = rename(view.interrogatorOverlay, 0, "询问机");
+  }
   return next;
+}
+
+function ensureMeanBearing(series) {
+  if (!series) return series;
+  if (Number.isFinite(Number(series.meanBearing))) return series;
+  const pts = series.points || [];
+  if (!pts.length) return series;
+  let sum = 0;
+  let n = 0;
+  for (const p of pts) {
+    const y = Array.isArray(p) ? Number(p[1]) : Number(p?.y);
+    if (!Number.isFinite(y)) continue;
+    sum += y;
+    n++;
+  }
+  if (!n) return series;
+  return { ...series, meanBearing: sum / n };
 }
 
 export function applyStreamTargetTypeLabelsToViews(views, labels) {

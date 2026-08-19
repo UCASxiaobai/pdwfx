@@ -1,6 +1,7 @@
 package com.scenefinder.service;
 
 import com.scenefinder.config.SceneFinderProperties;
+import com.scenefinder.model.AwacsOccupancyWindow;
 import com.scenefinder.model.QualityScene;
 import com.scenefinder.model.SceneType;
 import org.springframework.stereotype.Service;
@@ -11,6 +12,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -29,6 +31,15 @@ public class SceneFusionService {
             List<QualityScene> pollingScenes,
             SceneFinderProperties props
     ) {
+        return fuse(trackScenes, pollingScenes, props, Collections.<AwacsOccupancyWindow>emptyList());
+    }
+
+    public List<QualityScene> fuse(
+            List<QualityScene> trackScenes,
+            List<QualityScene> pollingScenes,
+            SceneFinderProperties props,
+            List<AwacsOccupancyWindow> forceWindows
+    ) {
         double overlapThreshold = props.getSceneFusionOverlapSuppressRatio();
 
         List<QualityScene> selectedTracks = mergeOverlappingScenes(
@@ -36,7 +47,8 @@ public class SceneFusionService {
                         trackScenes,
                         Math.max(0, props.getTopKTrackScenes()),
                         SceneType.TRACK_CONTINUOUS,
-                        overlapThreshold
+                        overlapThreshold,
+                        forceWindows
                 )
         );
         List<QualityScene> selectedPolling = mergeOverlappingScenes(
@@ -44,7 +56,8 @@ public class SceneFusionService {
                         pollingScenes,
                         Math.max(0, props.getTopKPollingScenes()),
                         SceneType.MULTI_DEVICE_POLLING,
-                        overlapThreshold
+                        overlapThreshold,
+                        forceWindows
                 )
         );
 
@@ -60,6 +73,28 @@ public class SceneFusionService {
             ranked.add(replaceRank(scene, rank++));
         }
         return ranked;
+    }
+
+    /**
+     * 轮询与单发点集已互斥时的并列汇总：各路内部仍做 Top-K 与同类型时间窗合并，
+     * 两类场景不再视为争同一批 PDW。
+     */
+    public List<QualityScene> assembleDisjointResults(
+            List<QualityScene> trackScenes,
+            List<QualityScene> pollingScenes,
+            SceneFinderProperties props
+    ) {
+        return assembleDisjointResults(trackScenes, pollingScenes, props,
+                Collections.<AwacsOccupancyWindow>emptyList());
+    }
+
+    public List<QualityScene> assembleDisjointResults(
+            List<QualityScene> trackScenes,
+            List<QualityScene> pollingScenes,
+            SceneFinderProperties props,
+            List<AwacsOccupancyWindow> forceWindows
+    ) {
+        return fuse(trackScenes, pollingScenes, props, forceWindows);
     }
 
     /**
@@ -218,9 +253,10 @@ public class SceneFusionService {
             List<QualityScene> candidates,
             int targetK,
             SceneType expectedType,
-            double overlapThreshold
+            double overlapThreshold,
+            List<AwacsOccupancyWindow> forceWindows
     ) {
-        if (targetK <= 0 || candidates.isEmpty()) {
+        if (candidates.isEmpty()) {
             return Collections.emptyList();
         }
 
@@ -230,15 +266,71 @@ public class SceneFusionService {
                 .collect(Collectors.toList());
 
         List<QualityScene> selected = new ArrayList<>();
-        for (QualityScene candidate : sorted) {
-            if (selected.size() >= targetK) {
-                break;
+        if (targetK > 0) {
+            for (QualityScene candidate : sorted) {
+                if (selected.size() >= targetK) {
+                    break;
+                }
+                if (shouldSuppress(candidate, selected, overlapThreshold)) {
+                    continue;
+                }
+                selected.add(candidate);
             }
-            if (shouldSuppress(candidate, selected, overlapThreshold)) {
-                continue;
-            }
-            selected.add(candidate);
         }
+        if (forceWindows != null && !forceWindows.isEmpty()) {
+            for (QualityScene candidate : sorted) {
+                if (selected.contains(candidate)) {
+                    continue;
+                }
+                if (!AwacsCommandNetService.sceneOverlapsAnyWindow(candidate, forceWindows)) {
+                    continue;
+                }
+                selected.add(candidate);
+            }
+        }
+
+        // #region agent log
+        try {
+            java.util.List<Map<String, Object>> near = new ArrayList<>();
+            int idx = 0;
+            for (QualityScene c : sorted) {
+                idx++;
+                double f = c.getFreqCenterMhz();
+                if (Math.abs(f - 460.625) <= 1.0 || Math.abs(f - 246.075) <= 0.01) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("rankInSorted", Integer.valueOf(idx));
+                    row.put("freqCenterMhz", Double.valueOf(f));
+                    row.put("score", Double.valueOf(c.getScore()));
+                    row.put("selected", Boolean.valueOf(selected.contains(c)));
+                    row.put("trackCount", Integer.valueOf(c.getTrackCount()));
+                    near.add(row);
+                }
+            }
+            if (!near.isEmpty()) {
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("sessionId", "0cb39e");
+                payload.put("runId", "pre-fix");
+                payload.put("hypothesisId", "B");
+                payload.put("location", "SceneFusionService.java:selectTopKPerType");
+                payload.put("message", "topk candidates near 246.075/460.625");
+                payload.put("timestamp", Long.valueOf(System.currentTimeMillis()));
+                Map<String, Object> data = new LinkedHashMap<>();
+                data.put("expectedType", expectedType == null ? null : expectedType.name());
+                data.put("targetK", Integer.valueOf(targetK));
+                data.put("sortedCount", Integer.valueOf(sorted.size()));
+                data.put("selectedCount", Integer.valueOf(selected.size()));
+                data.put("nearInterest", near);
+                payload.put("data", data);
+                String line = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(payload) + "\n";
+                java.nio.file.Path logPath = java.nio.file.Paths.get("D:/Documents/Code/Java/pdwfx/debug-0cb39e.log");
+                java.nio.file.Files.write(logPath, line.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+            }
+        } catch (Exception ignored) {
+            // debug only
+        }
+        // #endregion
+
         return selected;
     }
 
@@ -298,25 +390,6 @@ public class SceneFusionService {
     }
 
     private QualityScene replaceRank(QualityScene scene, int rank) {
-        return new QualityScene(
-                rank,
-                scene.getSceneType(),
-                scene.getWindowStart(),
-                scene.getWindowEnd(),
-                scene.getFreqCenterMhz(),
-                scene.getFreqMinMhz(),
-                scene.getFreqMaxMhz(),
-                scene.getDistinctDeviceCount(),
-                scene.getScore(),
-                scene.getTrackCount(),
-                scene.getMedianSeparationDeg(),
-                scene.getAverageSmoothness(),
-                scene.getTrackIds(),
-                scene.getPollingPeriodSec(),
-                scene.getPeriodicBurstCount(),
-                scene.getAvgBearingsPerBurst(),
-                scene.getPeriodicityScore(),
-                scene.getAnnotation()
-        );
+        return scene.withRank(rank);
     }
 }

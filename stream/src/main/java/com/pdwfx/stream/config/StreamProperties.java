@@ -31,12 +31,24 @@ public class StreamProperties {
     }
 
     public static class Batch {
-        private int durationMinutes = 5;
+        private int durationMinutes = 15;
         private String dir = "./stream-data";
         private int flushEveryRows = 200;
         private int maxQueueFiles = 24;
         /** 落盘前按频点+方位+探测时间去重（本批内），减小后续场景/信号分析量 */
         private boolean dedupEnabled = true;
+        /**
+         * 封批模式：ATTITUDE=横滚门控（|roll|≤门限落盘，高横滚持续确认后封批）；DURATION=仅按数据时间跨度。
+         */
+        private String sealMode = "ATTITUDE";
+        /** 姿态原始值 ÷ 该系数 → 度（与 course÷100 一致） */
+        private double attitudeScale = 100.0;
+        /** 横滚绝对值超过该值（度）视为转向候选 */
+        private double attitudeRollTurnDeg = 5.0;
+        /** 高横滚需持续满该秒数才确认转向并考虑封批 */
+        private double attitudeRollHoldSeconds = 5.0;
+        /** 确认转向时，从开批到当前时刻少于此秒数则不分析（含中间高横滚空洞） */
+        private double attitudeMinBatchSeconds = 60.0;
 
         public int getDurationMinutes() { return durationMinutes; }
         public void setDurationMinutes(int durationMinutes) { this.durationMinutes = durationMinutes; }
@@ -48,6 +60,25 @@ public class StreamProperties {
         public void setMaxQueueFiles(int maxQueueFiles) { this.maxQueueFiles = maxQueueFiles; }
         public boolean isDedupEnabled() { return dedupEnabled; }
         public void setDedupEnabled(boolean dedupEnabled) { this.dedupEnabled = dedupEnabled; }
+        public String getSealMode() { return sealMode; }
+        public void setSealMode(String sealMode) { this.sealMode = sealMode; }
+        public boolean isAttitudeSealMode() {
+            return sealMode == null || "ATTITUDE".equalsIgnoreCase(sealMode.trim());
+        }
+        public double getAttitudeScale() { return attitudeScale; }
+        public void setAttitudeScale(double attitudeScale) { this.attitudeScale = attitudeScale; }
+        public double getAttitudeRollTurnDeg() { return attitudeRollTurnDeg; }
+        public void setAttitudeRollTurnDeg(double attitudeRollTurnDeg) {
+            this.attitudeRollTurnDeg = attitudeRollTurnDeg;
+        }
+        public double getAttitudeRollHoldSeconds() { return attitudeRollHoldSeconds; }
+        public void setAttitudeRollHoldSeconds(double attitudeRollHoldSeconds) {
+            this.attitudeRollHoldSeconds = attitudeRollHoldSeconds;
+        }
+        public double getAttitudeMinBatchSeconds() { return attitudeMinBatchSeconds; }
+        public void setAttitudeMinBatchSeconds(double attitudeMinBatchSeconds) {
+            this.attitudeMinBatchSeconds = attitudeMinBatchSeconds;
+        }
     }
 
     public static class Analyze {
@@ -80,8 +111,8 @@ public class StreamProperties {
         private Double freqMax;
         private double windowSeconds = 120;
         private Double windowStepSeconds;
-        private int topKTrackScenes = 50;
-        private int topKPollingScenes = 50;
+        private int topKTrackScenes = 20;
+        private int topKPollingScenes = 20;
         private Integer minTracksInScene;
         private Integer topKScenes;
         /** 每频段只评本批实际 [min,max] 一次（连续+轮询），默认开启 */

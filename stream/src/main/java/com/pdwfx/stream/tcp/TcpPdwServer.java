@@ -106,6 +106,21 @@ public class TcpPdwServer {
     public K187B108Parser.ParseStats getParseStats() { return parser.getStats(); }
     public K187B108Parser.Head3Snapshot getLastHead3Snapshot() { return parser.getLastHead3(); }
 
+    /** 清零收包/组帧/解析计数（不断开 TCP 监听）。 */
+    public void resetRuntimeStats() {
+        bytesIn.set(0L);
+        packetsIn.set(0L);
+        syncLoss.set(0L);
+        magicHits.set(0L);
+        badLengthSkips.set(0L);
+        lastSeenPacketLen = -1;
+        pendingSize = 0;
+        firstChunkHex = "";
+        recentChunkHex = "";
+        parser.resetStats();
+        log.info("TCP runtime stats reset");
+    }
+
     private void acceptLoop() {
         try {
             InetAddress bind = InetAddress.getByName(properties.getTcp().getBind());

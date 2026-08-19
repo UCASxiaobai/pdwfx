@@ -39,12 +39,20 @@ public class TrackBuilderService {
 
     /**
      * 对全部检测点建轨。先 {@link FrequencyBandUtils#partitionPoints} 分频段，再逐段建轨并合并 ID。
+     * 若开启 {@link SceneFinderProperties#isDutyPriorityEnabled()}：同频粗方位估占空比后按
+     * GROUND→AWACS→AIR 优先级建轨，低优先级不抢已占用点。
      */
     public List<BearingTrack> buildTracks(List<DetectionPoint> points, SceneFinderProperties props) {
         if (points.isEmpty()) {
             return Collections.emptyList();
         }
+        if (props.isDutyPriorityEnabled()) {
+            return buildTracksDutyPriority(points, props);
+        }
+        return buildTracksLegacy(points, props);
+    }
 
+    private List<BearingTrack> buildTracksLegacy(List<DetectionPoint> points, SceneFinderProperties props) {
         List<List<DetectionPoint>> freqBands = FrequencyBandUtils.partitionPoints(
                 points, props.getFreqClusterGapMhz());
         List<BearingTrack> allTracks = new ArrayList<>();
@@ -55,6 +63,151 @@ public class TrackBuilderService {
         return allTracks.stream()
                 .sorted(Comparator.comparing(BearingTrack::startTime))
                 .collect(Collectors.toList());
+    }
+
+    private List<BearingTrack> buildTracksDutyPriority(List<DetectionPoint> points, SceneFinderProperties props) {
+        List<List<DetectionPoint>> freqBands = FrequencyBandUtils.partitionPoints(
+                points, props.getFreqClusterGapMhz());
+        List<BearingTrack> allTracks = new ArrayList<>();
+        int nextTrackId = 1;
+        Set<String> claimed = new HashSet<>();
+        for (List<DetectionPoint> bandPoints : freqBands) {
+            List<DutyBucket> buckets = coarseDutyBuckets(bandPoints, props);
+            buckets.sort((a, b) -> {
+                int pa = priorityRank(a.suggestedType);
+                int pb = priorityRank(b.suggestedType);
+                if (pa != pb) {
+                    return Integer.compare(pa, pb);
+                }
+                return Double.compare(b.dutyPct, a.dutyPct);
+            });
+            for (DutyBucket bucket : buckets) {
+                List<DetectionPoint> available = new ArrayList<>();
+                for (DetectionPoint p : bucket.points) {
+                    if (!claimed.contains(p.pointKey())) {
+                        available.add(p);
+                    }
+                }
+                if (available.isEmpty()) {
+                    continue;
+                }
+                SceneFinderProperties gated = cloneWithAssociationGate(props, gateForType(bucket.suggestedType, props));
+                List<BearingTrack> built = new ArrayList<>();
+                nextTrackId = buildTracksForBand(available, gated, nextTrackId, built);
+                for (BearingTrack t : built) {
+                    t.setSuggestedPlatformType(bucket.suggestedType);
+                    t.setCoarseDutyPct(bucket.dutyPct);
+                    for (TrackObservation o : t.getObservations()) {
+                        claimed.add(o.getSourceFile() + "|" + o.getRowIndex());
+                    }
+                    allTracks.add(t);
+                }
+            }
+        }
+        return allTracks.stream()
+                .sorted(Comparator.comparing(BearingTrack::startTime))
+                .collect(Collectors.toList());
+    }
+
+    private static int priorityRank(String type) {
+        if ("GROUND".equals(type)) return 0;
+        if ("AWACS".equals(type)) return 1;
+        return 2;
+    }
+
+    private static double gateForType(String type, SceneFinderProperties props) {
+        if ("GROUND".equals(type)) {
+            return props.getDutyGroundAssociationGateDeg();
+        }
+        if ("AWACS".equals(type)) {
+            return props.getDutyAwacsAssociationGateDeg();
+        }
+        return props.getDutyAirAssociationGateDeg() > 0
+                ? props.getDutyAirAssociationGateDeg()
+                : props.getAssociationGateDeg();
+    }
+
+    private static SceneFinderProperties cloneWithAssociationGate(SceneFinderProperties src, double gate) {
+        SceneFinderProperties p = new SceneFinderProperties();
+        p.copyFrom(src);
+        p.setAssociationGateDeg(gate);
+        p.setBearingClusterGapDeg(Math.min(src.getBearingClusterGapDeg(), Math.max(1.0, gate)));
+        return p;
+    }
+
+    private List<DutyBucket> coarseDutyBuckets(List<DetectionPoint> bandPoints, SceneFinderProperties props) {
+        List<DetectionPoint> sorted = new ArrayList<>(bandPoints);
+        sorted.sort(Comparator.comparing(DetectionPoint::getTime)
+                .thenComparingDouble(DetectionPoint::getBearingDeg));
+        double gap = Math.max(0.5, props.getDutyCoarseBearingGapDeg());
+        List<List<DetectionPoint>> clusters = new ArrayList<>();
+        for (DetectionPoint p : sorted) {
+            boolean placed = false;
+            for (List<DetectionPoint> c : clusters) {
+                double ref = c.stream().mapToDouble(DetectionPoint::getBearingDeg).average().orElse(p.getBearingDeg());
+                if (Math.abs(BearingMath.shortestDelta(ref, p.getBearingDeg())) <= gap) {
+                    c.add(p);
+                    placed = true;
+                    break;
+                }
+            }
+            if (!placed) {
+                List<DetectionPoint> c = new ArrayList<>();
+                c.add(p);
+                clusters.add(c);
+            }
+        }
+        List<DutyBucket> out = new ArrayList<>();
+        for (List<DetectionPoint> c : clusters) {
+            double duty = estimateDutyPct(c);
+            String type;
+            if (duty >= props.getDutyGroundMinPct()) {
+                type = "GROUND";
+            } else if (duty >= props.getDutyAwacsMinPct()) {
+                type = "AWACS";
+            } else {
+                type = "AIR";
+            }
+            out.add(new DutyBucket(c, duty, type));
+        }
+        return out;
+    }
+
+    /** 活跃驻留累计 / 观测窗 → 占空比 % */
+    static double estimateDutyPct(List<DetectionPoint> pts) {
+        if (pts == null || pts.size() < 2) {
+            return 0d;
+        }
+        long t0 = Long.MAX_VALUE;
+        long t1 = Long.MIN_VALUE;
+        double active = 0d;
+        for (DetectionPoint p : pts) {
+            long ms = p.getTime().toEpochMilli();
+            t0 = Math.min(t0, ms);
+            t1 = Math.max(t1, ms);
+            active += Math.max(0d, p.getSignalDwellMs());
+        }
+        long span = t1 - t0;
+        if (span <= 0L) {
+            return 0d;
+        }
+        if (active <= 0d) {
+            // 无驻留列时用点数密度近似：假设每点有效 50ms
+            active = pts.size() * 50.0;
+        }
+        return Math.min(100.0, active * 100.0 / span);
+    }
+
+    private static final class DutyBucket {
+        final List<DetectionPoint> points;
+        final double dutyPct;
+        final String suggestedType;
+
+        DutyBucket(List<DetectionPoint> points, double dutyPct, String suggestedType) {
+            this.points = points;
+            this.dutyPct = dutyPct;
+            this.suggestedType = suggestedType;
+        }
     }
 
     /**

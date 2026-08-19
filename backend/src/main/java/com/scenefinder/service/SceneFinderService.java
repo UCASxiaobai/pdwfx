@@ -1,9 +1,11 @@
 package com.scenefinder.service;
 
 import com.scenefinder.config.SceneFinderProperties;
+import com.scenefinder.model.AwacsOccupancyWindow;
 import com.scenefinder.model.BearingTrack;
 import com.scenefinder.model.DetectionPoint;
 import com.scenefinder.model.FrequencyBandUtils;
+import com.scenefinder.model.OccupancyCluster;
 import com.scenefinder.model.QualityScene;
 import com.scenefinder.model.SceneFinderResult;
 import com.scenefinder.model.SceneType;
@@ -29,6 +31,7 @@ import java.util.Collections;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -51,9 +54,12 @@ public class SceneFinderService {
     private final SceneScorerService sceneScorerService;
     private final MultiDevicePollingDetectorService pollingDetectorService;
     private final PollingTrackBuilderService pollingTrackBuilderService;
+    private final AirHypothesisArbiter airHypothesisArbiter;
     private final SceneFusionService sceneFusionService;
     private final VisualizationService visualizationService;
+    private final FrequencyHopTrackService frequencyHopTrackService;
     private final SceneFinderProperties properties;
+    private final AwacsCommandNetService awacsCommandNetService;
 
     public SceneFinderService(
             CsvDetectionReader csvDetectionReader,
@@ -61,18 +67,24 @@ public class SceneFinderService {
             SceneScorerService sceneScorerService,
             MultiDevicePollingDetectorService pollingDetectorService,
             PollingTrackBuilderService pollingTrackBuilderService,
+            AirHypothesisArbiter airHypothesisArbiter,
             SceneFusionService sceneFusionService,
             VisualizationService visualizationService,
-            SceneFinderProperties properties
+            FrequencyHopTrackService frequencyHopTrackService,
+            SceneFinderProperties properties,
+            AwacsCommandNetService awacsCommandNetService
     ) {
         this.csvDetectionReader = csvDetectionReader;
         this.trackBuilderService = trackBuilderService;
         this.sceneScorerService = sceneScorerService;
         this.pollingDetectorService = pollingDetectorService;
         this.pollingTrackBuilderService = pollingTrackBuilderService;
+        this.airHypothesisArbiter = airHypothesisArbiter;
         this.sceneFusionService = sceneFusionService;
         this.visualizationService = visualizationService;
+        this.frequencyHopTrackService = frequencyHopTrackService;
         this.properties = properties;
+        this.awacsCommandNetService = awacsCommandNetService;
     }
 
     /**
@@ -86,52 +98,140 @@ public class SceneFinderService {
 
         List<DetectionPoint> points = csvDetectionReader.read(
                 csvPath, effective.getFreqMin(), effective.getFreqMax());
-        List<BearingTrack> tracks = trackBuilderService.buildTracks(points, effective);
-        int nextTrackId = tracks.stream().mapToInt(BearingTrack::getId).max().orElse(0) + 1;
+        TrackAssembly assembly = assembleTracks(points, effective);
 
-        List<QualityScene> rawPollingScenes = pollingDetectorService.findPollingScenes(points, effective);
-        List<QualityScene> pollingScenes = new ArrayList<>();
-        for (QualityScene scene : rawPollingScenes) {
+        List<QualityScene> trackScenes = sceneScorerService.findTopScenes(assembly.continuousForScore, effective);
+        double freqTol = effective.getSceneFreqBandGapMhz() > 0
+                ? effective.getSceneFreqBandGapMhz() : effective.getFreqClusterGapMhz();
+        List<AwacsOccupancyWindow> forceWindows = awacsCommandNetService.collectWindowsFromTracks(
+                assembly.tracks, effective.getCommandNetPadSec(), freqTol);
+        List<QualityScene> scenes = sceneFusionService.assembleDisjointResults(
+                trackScenes, assembly.pollingScenes, effective, forceWindows);
+
+        if (effective.isFullSpanWindow() && !points.isEmpty()) {
+            scenes = expandFullSpan(scenes, points);
+        }
+        return writeOutputs(csvPath, effective, points, assembly.tracks, scenes);
+    }
+
+    /**
+     * 指挥网二次：对占用窗筛后的点建轨+轮询，不走 Top-K，按占用频簇各出一条场景。
+     */
+    public SceneFinderResult analyzeCommandNet(
+            Path csvPath,
+            List<AwacsOccupancyWindow> windows,
+            AnalyzeOptions options
+    ) throws IOException {
+        SceneFinderProperties effective = mergeOptions(options);
+        effective.setFullSpanWindow(false);
+        List<DetectionPoint> points = csvDetectionReader.read(
+                csvPath, effective.getFreqMin(), effective.getFreqMax());
+        TrackAssembly assembly = assembleTracks(points, effective);
+        double freqTol = effective.getSceneFreqBandGapMhz() > 0
+                ? effective.getSceneFreqBandGapMhz() : effective.getFreqClusterGapMhz();
+        List<OccupancyCluster> clusters = awacsCommandNetService.clusterByFreq(windows, freqTol);
+        List<QualityScene> scenes = awacsCommandNetService.buildScenes(clusters, assembly.tracks);
+        return writeOutputs(csvPath, effective, points, assembly.tracks, scenes);
+    }
+
+    private TrackAssembly assembleTracks(List<DetectionPoint> points, SceneFinderProperties effective) {
+        List<BearingTrack> firstPass = trackBuilderService.buildTracks(points, effective);
+        List<BearingTrack> persistentTracks = new ArrayList<BearingTrack>();
+        List<BearingTrack> airHypTracks = new ArrayList<BearingTrack>();
+        for (BearingTrack track : firstPass) {
+            if (MultiDevicePollingDetectorService.isPersistentPlatform(track)) {
+                persistentTracks.add(track);
+            } else {
+                airHypTracks.add(track);
+            }
+        }
+        Set<SourceRowRef> persistentRows = collectTrackRows(persistentTracks);
+        List<DetectionPoint> airPoints = pointsNotIn(points, persistentRows);
+
+        List<QualityScene> rawPollingScenes = pollingDetectorService.findPollingScenes(
+                airPoints, persistentTracks, effective);
+        List<QualityScene> pollingKept = airHypothesisArbiter.selectPollingWindows(
+                rawPollingScenes, airHypTracks, effective);
+
+        List<BearingTrack> tracks = new ArrayList<BearingTrack>(persistentTracks);
+        List<QualityScene> pollingScenes = new ArrayList<QualityScene>();
+        Set<SourceRowRef> claimed = new HashSet<SourceRowRef>(persistentRows);
+        int nextTrackId = nextTrackIdAfter(persistentTracks);
+        for (QualityScene scene : pollingKept) {
             PollingTrackBuilderService.LaneBuildResult built =
-                    pollingTrackBuilderService.buildLaneTracks(scene, points, effective, nextTrackId);
-            if (built.getTracks().isEmpty()) {
+                    pollingTrackBuilderService.buildLaneTracks(scene, airPoints, effective, nextTrackId);
+            if (built.getTracks().size() < 2) {
                 continue;
             }
             tracks.addAll(built.getTracks());
             nextTrackId += built.getTracks().size();
-            List<Integer> laneIds = built.getTracks().stream()
-                    .map(BearingTrack::getId)
-                    .collect(Collectors.toList());
-            pollingScenes.add(scene.withPollingLaneTracks(
-                    laneIds, built.getLaneCount(), built.getAlignedRoundCount()));
-        }
-
-        List<QualityScene> trackScenes = sceneScorerService.findTopScenes(tracks, effective);
-        List<QualityScene> scenes = sceneFusionService.fuse(trackScenes, pollingScenes, effective);
-
-        // 全段窗：各频段评分窗可能短于整批；最终结果/可视化时间轴统一对齐本批检测起止
-        if (effective.isFullSpanWindow() && !points.isEmpty()) {
-            Instant dataStart = points.stream()
-                    .map(DetectionPoint::getTime)
-                    .min(Instant::compareTo)
-                    .orElse(null);
-            Instant dataEnd = points.stream()
-                    .map(DetectionPoint::getTime)
-                    .max(Instant::compareTo)
-                    .orElse(null);
-            if (dataStart != null && dataEnd != null && !dataEnd.isBefore(dataStart)) {
-                List<QualityScene> expanded = new ArrayList<>(scenes.size());
-                for (QualityScene scene : scenes) {
-                    expanded.add(scene.withWindow(dataStart, dataEnd));
-                }
-                scenes = expanded;
+            claimed.addAll(built.getRowToTrackId().keySet());
+            List<Integer> laneIds = new ArrayList<Integer>();
+            for (BearingTrack t : built.getTracks()) {
+                laneIds.add(Integer.valueOf(t.getId()));
             }
+            Integer interrogatorId = scene.getInterrogatorTrackId() != null
+                    ? scene.getInterrogatorTrackId() : built.getInterrogatorTrackId();
+            Double interrogatorBearing = scene.getInterrogatorBearingDeg() != null
+                    ? scene.getInterrogatorBearingDeg() : built.getInterrogatorBearingDeg();
+            String note = String.format(
+                    java.util.Locale.CHINA,
+                    "点名组：询问机为已有连续轨%s，应答机 %d 条飞机 lane；应答机仅相邻轮次同槽位相连",
+                    interrogatorId != null ? " #" + interrogatorId : "",
+                    built.getResponderLaneCount());
+            QualityScene updated = scene.withPollingLaneTracks(
+                    laneIds, built.getLaneCount(), built.getAlignedRoundCount());
+            updated = updated.withCallsignMeta(
+                    interrogatorId,
+                    interrogatorBearing,
+                    built.getResponderLaneCount(),
+                    built.getChannelTargetCount(),
+                    note);
+            pollingScenes.add(updated);
         }
 
+        List<DetectionPoint> leftoverAir = pointsNotIn(airPoints, claimed);
+        List<BearingTrack> leftoverTracks = trackBuilderService.buildTracks(leftoverAir, effective);
+        for (BearingTrack t : leftoverTracks) {
+            t.setId(nextTrackId++);
+        }
+        tracks.addAll(leftoverTracks);
+
+        List<BearingTrack> continuousForScore = new ArrayList<BearingTrack>(persistentTracks);
+        continuousForScore.addAll(leftoverTracks);
+        return new TrackAssembly(tracks, pollingScenes, continuousForScore);
+    }
+
+    private List<QualityScene> expandFullSpan(List<QualityScene> scenes, List<DetectionPoint> points) {
+        Instant dataStart = points.stream()
+                .map(DetectionPoint::getTime)
+                .min(Instant::compareTo)
+                .orElse(null);
+        Instant dataEnd = points.stream()
+                .map(DetectionPoint::getTime)
+                .max(Instant::compareTo)
+                .orElse(null);
+        if (dataStart == null || dataEnd == null || dataEnd.isBefore(dataStart)) {
+            return scenes;
+        }
+        List<QualityScene> expanded = new ArrayList<QualityScene>(scenes.size());
+        for (QualityScene scene : scenes) {
+            expanded.add(scene.withWindow(dataStart, dataEnd));
+        }
+        return expanded;
+    }
+
+    private SceneFinderResult writeOutputs(
+            Path csvPath,
+            SceneFinderProperties effective,
+            List<DetectionPoint> points,
+            List<BearingTrack> tracks,
+            List<QualityScene> scenes
+    ) throws IOException {
         Path outputDir = Paths.get(effective.getOutputDir()).toAbsolutePath().normalize();
         Files.createDirectories(outputDir);
 
-        List<String> exportedFiles = new ArrayList<>();
+        List<String> exportedFiles = new ArrayList<String>();
         exportedFiles.add(exportSceneSummary(outputDir, csvPath, scenes));
 
         Map<Integer, BearingTrack> trackById = tracks.stream()
@@ -142,11 +242,11 @@ public class SceneFinderService {
         exportedFiles.add(exportTrackDetections(outputDir, trackById));
 
         for (QualityScene scene : scenes) {
-            if (scene.getSceneType() == SceneType.TRACK_CONTINUOUS) {
-                exportedFiles.add(exportSceneTrackDetections(outputDir, scene, trackById));
-            } else {
+            if (scene.getSceneType() == SceneType.MULTI_DEVICE_POLLING) {
                 exportedFiles.add(exportScenePollingDetections(
                         outputDir, scene, points, rowMapFromSceneTracks(scene, trackById)));
+            } else {
+                exportedFiles.add(exportSceneTrackDetections(outputDir, scene, trackById));
             }
         }
 
@@ -162,6 +262,10 @@ public class SceneFinderService {
                 effective.getFrameSeconds(),
                 maxScatter,
                 effective.isEnableImportScatter());
+        visualization.put(
+                "hoppingTrackViews",
+                frequencyHopTrackService.buildHoppingTrackViews(
+                        scenes, trackById, points, effective, zone));
         exportedFiles.add(visualizationService.exportHtml(outputDir, visualization));
         exportedFiles.add(visualizationService.exportJson(outputDir, visualization));
 
@@ -179,6 +283,61 @@ public class SceneFinderService {
                 exportedFiles,
                 apiVisualization
         );
+    }
+
+    private static final class TrackAssembly {
+        final List<BearingTrack> tracks;
+        final List<QualityScene> pollingScenes;
+        final List<BearingTrack> continuousForScore;
+
+        TrackAssembly(
+                List<BearingTrack> tracks,
+                List<QualityScene> pollingScenes,
+                List<BearingTrack> continuousForScore
+        ) {
+            this.tracks = tracks;
+            this.pollingScenes = pollingScenes;
+            this.continuousForScore = continuousForScore;
+        }
+    }
+
+    private static Set<SourceRowRef> collectTrackRows(List<BearingTrack> tracks) {
+        Set<SourceRowRef> rows = new HashSet<SourceRowRef>();
+        if (tracks == null) {
+            return rows;
+        }
+        for (BearingTrack track : tracks) {
+            for (TrackObservation obs : track.getObservations()) {
+                rows.add(obs.sourceRow());
+            }
+        }
+        return rows;
+    }
+
+    private static List<DetectionPoint> pointsNotIn(List<DetectionPoint> points, Set<SourceRowRef> claimed) {
+        List<DetectionPoint> out = new ArrayList<DetectionPoint>();
+        if (points == null) {
+            return out;
+        }
+        for (DetectionPoint p : points) {
+            if (claimed == null || !claimed.contains(p.sourceRow())) {
+                out.add(p);
+            }
+        }
+        return out;
+    }
+
+    private static int nextTrackIdAfter(List<BearingTrack> tracks) {
+        int next = 1;
+        if (tracks == null) {
+            return next;
+        }
+        for (BearingTrack track : tracks) {
+            if (track.getId() + 1 > next) {
+                next = track.getId() + 1;
+            }
+        }
+        return next;
     }
 
     /** 将 API/CLI 传入的 options 与 Spring 注入的 properties 合并为一次分析使用的配置。 */

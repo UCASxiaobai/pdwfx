@@ -5,6 +5,8 @@
 **服务地址（默认）**：`http://localhost:18080`  
 **Java 入口类**：`com.pdwfx.signal.api.SignalAnalysisFacade`（Spring `@Service`，可注入）
 
+**逐条编批（其他前端按点取方位/时间/频率/类型/波道）**：见 **[detection-batch-api.md](./detection-batch-api.md)**。
+
 ---
 
 ## 1. 调用流程
@@ -128,6 +130,20 @@ POST /api/signals/analysis/{analysisId}/preload-all
 **响应**：`AnalyzeSessionResponse`；大文件（如 2000+ 网）可能耗时很长，建议客户端超时 ≥30 分钟或异步轮询业务侧任务。
 
 前端默认勾选「导入后分析全部网络属性」即：① 分网 → ② 调用本接口。
+
+---
+
+### 2.7 逐条侦测编批（其他软件前端）
+
+一次返回每条侦测的编批号、方位、时间、频率、目标类型、占用波道。详见 **[detection-batch-api.md](./detection-batch-api.md)**。
+
+```
+POST /api/signals/analyze/detections
+POST /api/signals/analyze/detections/json
+GET  /api/signals/analysis/{analysisId}/detections
+```
+
+同一 `batchId` 表示同一目标；`batchId=0` 为未编批点。
 
 ---
 

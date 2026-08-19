@@ -41,7 +41,9 @@ import java.util.*;
  */
 @Service
 public class ExcelImportService {
+    /** CSV 时间：yyyy-MM-dd HH:mm:ss.SSS */
     private static final DateTimeFormatter CSV_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
+    /** ISO 本地日期时间 */
     private static final DateTimeFormatter ISO_TIME_FORMAT = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
 
     public List<DetectSignal> parse(Path path) throws IOException {
@@ -175,6 +177,7 @@ public class ExcelImportService {
         signal.setTargetLat(readNullableDouble(row, headerIndex, "TARGET_LAT"));
         signal.setEquipId(readStr(row, headerIndex, "EQUIP_ID"));
         signal.setClzt(readStr(row, headerIndex, "CLZT"));
+        applySceneTrackId(signal, row, headerIndex);
         fillDetectTimesss(signal);
         return signal;
     }
@@ -203,10 +206,17 @@ public class ExcelImportService {
         signal.setTargetLat(readNullableDouble(record, "TARGET_LAT"));
         signal.setEquipId(readStr(record, "EQUIP_ID"));
         signal.setClzt(readStr(record, "CLZT"));
+        applySceneTrackId(signal, record);
         fillDetectTimesss(signal);
         return signal;
     }
 
+    /**
+     * PDW 侦获表（Excel 行）→ DetectSignal。
+     * 列映射：ZBXH→id/平台；ZCSJ→时间；PL→freq；XHFW→azimuth；XHFD→幅度；
+     * XHBK→带宽；TZYS→调制；DWJD/DWD→目标经纬度；ZJWZJD/ZJWZWD→测站位置；
+     * nSignalTime→驻留 ms。
+     */
     private DetectSignal mapTableRow(Row row, Map<String, Integer> headerIndex, int rowNum) {
         DetectSignal signal = new DetectSignal();
         String zbxh = readStr(row, headerIndex, "ZBXH");
@@ -232,10 +242,14 @@ public class ExcelImportService {
         signal.setTargetLat(firstNonNull(readNullableDouble(row, headerIndex, "DWD"), readNullableDouble(row, headerIndex, "DWWD"), readNullableDouble(row, headerIndex, "TARGET_LAT")));
         signal.setClzt(readStr(row, headerIndex, "IFCDW"));
         signal.setSignalDwellMs(readSignalDwellMs(row, headerIndex));
+        applySceneTrackId(signal, row, headerIndex);
         fillDetectTimesss(signal);
         return signal;
     }
 
+    /**
+     * PDW 侦获表（CSV 行）→ DetectSignal，列含义同 {@link #mapTableRow}。
+     */
     private DetectSignal mapTableRecord(CSVRecord record, int rowNum) {
         DetectSignal signal = new DetectSignal();
         String zbxh = readStr(record, "ZBXH");
@@ -261,8 +275,31 @@ public class ExcelImportService {
         signal.setTargetLat(firstNonNull(readNullableDouble(record, "DWD"), readNullableDouble(record, "DWWD"), readNullableDouble(record, "TARGET_LAT")));
         signal.setClzt(readStr(record, "IFCDW"));
         signal.setSignalDwellMs(readSignalDwellMs(record));
+        applySceneTrackId(signal, record);
         fillDetectTimesss(signal);
         return signal;
+    }
+
+    private void applySceneTrackId(DetectSignal signal, CSVRecord record) {
+        String v = readStr(record, "TRACK_ID");
+        signal.setSceneTrackId(parsePositiveInt(v));
+    }
+
+    private void applySceneTrackId(DetectSignal signal, Row row, Map<String, Integer> headerIndex) {
+        String v = readStr(row, headerIndex, "TRACK_ID");
+        signal.setSceneTrackId(parsePositiveInt(v));
+    }
+
+    private static Integer parsePositiveInt(String v) {
+        if (v == null || v.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            int id = (int) Double.parseDouble(v.trim());
+            return id > 0 ? Integer.valueOf(id) : null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private void validateSignalImportFormat(ImportFormat format, String fileName) {

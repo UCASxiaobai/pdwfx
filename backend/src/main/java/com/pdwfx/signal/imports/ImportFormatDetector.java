@@ -36,20 +36,28 @@ public final class ImportFormatDetector {
         }
     }
 
+    /**
+     * 根据已大写的表头索引判定格式。
+     * <ul>
+     *   <li>detectTime+lon+lat 且无 PDW 测向列 → 外源定位</li>
+     *   <li>pl+xhfw+zcsj（或 ZBXH+测向相关列）→ PDW 表</li>
+     *   <li>FREQ+AZIMUTH → 标准英文字段</li>
+     * </ul>
+     */
     public static ImportFormat detect(Map<String, Integer> headerIndexUpper) {
         if (headerIndexUpper == null || headerIndexUpper.isEmpty()) {
             return ImportFormat.UNKNOWN;
         }
 
-        boolean hasZbxh = headerIndexUpper.containsKey("ZBXH");
+        boolean hasZbxh = headerIndexUpper.containsKey("ZBXH");           // 装备/批序号
         boolean hasDetectTime = headerIndexUpper.containsKey("DETECTTIME");
         boolean hasLon = headerIndexUpper.containsKey("LONGITUDE");
         boolean hasLat = headerIndexUpper.containsKey("LATITUDE");
-        boolean hasDwsx = headerIndexUpper.containsKey("DWSX");
-        boolean hasZcsj = headerIndexUpper.containsKey("ZCSJ");
-        boolean hasXhfw = headerIndexUpper.containsKey("XHFW");
-        boolean hasPl = headerIndexUpper.containsKey("PL");
-        boolean hasXhfd = headerIndexUpper.containsKey("XHFD");
+        boolean hasDwsx = headerIndexUpper.containsKey("DWSX");           // 定位属性（雷情）
+        boolean hasZcsj = headerIndexUpper.containsKey("ZCSJ");           // 侦获时间
+        boolean hasXhfw = headerIndexUpper.containsKey("XHFW");           // 信号方位
+        boolean hasPl = headerIndexUpper.containsKey("PL");               // 频率
+        boolean hasXhfd = headerIndexUpper.containsKey("XHFD");           // 信号幅度
         boolean hasFreq = headerIndexUpper.containsKey("FREQ");
         boolean hasAzimuth = headerIndexUpper.containsKey("AZIMUTH");
 

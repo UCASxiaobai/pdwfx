@@ -55,14 +55,18 @@ public class SignalAnalysisService {
     private static final double MIN_SIGNAL_LEVEL_SPLIT_RANGE = 18d;
     /** 幅度聚类间隔 (dB) */
     private static final double SIGNAL_LEVEL_GAP = 6d;
-    /** 测向误差门限（度），用于平台类型分类时的方位稳定判据 */
+    /** 测向误差门限（度），平缓段有效测向误差先验 ≈1° */
     private static final double AZIMUTH_DF_ERROR_DEG = 1.0;
-    /** 发射占空比 ≥ 此值 → 地面站（平台类型主判据） */
-    private static final double DUTY_CYCLE_GROUND_PCT = 25.0;
-    /** 发射占空比 ≥ 此值且 < 地面门限 → 预警机（平台类型主判据，todo：>4%） */
+    /** 发射占空比 ≥ 此值 → 地面站（与预警机上沿相接） */
+    private static final double DUTY_CYCLE_GROUND_PCT = CommunicationLinkAnalysisService.DUTY_GROUND_MIN_PCT;
+    /** 发射占空比 ≥ 此值且 &lt; 地面门限 → 预警机（平台类型主判据） */
     private static final double DUTY_CYCLE_AWACS_PCT = CommunicationLinkAnalysisService.DUTY_AWACS_MIN_PCT;
-    /** 占空比近地面门限时，误差椭圆辅证采用的带宽（百分点） */
-    private static final double DUTY_CYCLE_GROUND_GRAY_PCT = 3.0;
+    /** 聚类前占空比优先：低占空比簇默认 AIR，关闭弱椭圆上调 */
+    private static final boolean DUTY_PRIORITY_CLASSIFY = true;
+    /** 粗分方位间隙（度），用于占空比优先聚类 */
+    private static final double DUTY_COARSE_BEARING_GAP_DEG = 4.0;
+    /** 预警机系统性方位漂移率门限（°/s）；低于此且测向过稳时不因椭圆抬成地面站 */
+    private static final double AWACS_MIN_DRIFT_DEG_PER_SEC = 0.05;
     /** 样本数不足时不做幅度拆分 */
     private static final int MIN_SIGNAL_SAMPLES_FOR_SPLIT = 120;
     /** 幅度子簇内标准差上限，超过则视为单条变化曲线不拆分 */
@@ -176,8 +180,94 @@ public class SignalAnalysisService {
         return downsampleUniform(signals, COMM_MODE_SAMPLE_CAP);
     }
 
-    /** 编批：方位轨迹 → 并行方位/幅度轨 → 目标簇列表（每个元素对应一个目标） */
+    /** 编批：有场景 track_id 时按轨分目标，否则方位轨迹 → 并行方位/幅度轨 */
     private List<List<DetectSignal>> partitionIntoTargetClusters(List<DetectSignal> networkSignals) {
+        List<List<DetectSignal>> bySceneTrack = partitionBySceneTrackId(networkSignals);
+        if (bySceneTrack != null) {
+            return bySceneTrack;
+        }
+        if (!DUTY_PRIORITY_CLASSIFY) {
+            return partitionIntoTargetClustersCore(networkSignals);
+        }
+        List<List<DetectSignal>> coarse = coarseDutyBuckets(networkSignals);
+        coarse.sort((a, b) -> Double.compare(estimateDutyPct(b), estimateDutyPct(a)));
+        Set<DetectSignal> used = Collections.newSetFromMap(new IdentityHashMap<>());
+        List<List<DetectSignal>> out = new ArrayList<>();
+        for (List<DetectSignal> bucket : coarse) {
+            List<DetectSignal> available = new ArrayList<>();
+            for (DetectSignal s : bucket) {
+                if (!used.contains(s)) {
+                    available.add(s);
+                }
+            }
+            if (available.size() < 2) {
+                continue;
+            }
+            for (List<DetectSignal> c : partitionIntoTargetClustersCore(available)) {
+                out.add(c);
+                used.addAll(c);
+            }
+        }
+        List<DetectSignal> leftover = new ArrayList<>();
+        for (DetectSignal s : networkSignals) {
+            if (!used.contains(s)) {
+                leftover.add(s);
+            }
+        }
+        if (leftover.size() >= 2) {
+            out.addAll(partitionIntoTargetClustersCore(leftover));
+        }
+        return bearingTrackMatchService.mergeMatchingClusters(out, new BearingTrackMatchService.MatchOptions());
+    }
+
+    /**
+     * 轮询/单发场景转发 CSV 已带 track_id 时，按轨分目标，禁止再按方位重聚。
+     * 覆盖不足半数则退回原聚类。
+     */
+    private List<List<DetectSignal>> partitionBySceneTrackId(List<DetectSignal> signals) {
+        if (signals == null || signals.isEmpty()) {
+            return null;
+        }
+        int tagged = 0;
+        for (DetectSignal s : signals) {
+            if (s.getSceneTrackId() != null && s.getSceneTrackId().intValue() > 0) {
+                tagged++;
+            }
+        }
+        if (tagged < 2 || tagged * 2 < signals.size()) {
+            return null;
+        }
+        Map<Integer, List<DetectSignal>> groups = new LinkedHashMap<Integer, List<DetectSignal>>();
+        List<DetectSignal> untagged = new ArrayList<DetectSignal>();
+        for (DetectSignal s : signals) {
+            Integer id = s.getSceneTrackId();
+            if (id == null || id.intValue() <= 0) {
+                untagged.add(s);
+                continue;
+            }
+            List<DetectSignal> g = groups.get(id);
+            if (g == null) {
+                g = new ArrayList<DetectSignal>();
+                groups.put(id, g);
+            }
+            g.add(s);
+        }
+        List<List<DetectSignal>> out = new ArrayList<List<DetectSignal>>();
+        for (List<DetectSignal> g : groups.values()) {
+            if (g.size() >= 2) {
+                out.add(g);
+            }
+        }
+        if (out.size() < 2) {
+            return null;
+        }
+        if (untagged.size() >= 2) {
+            out.addAll(partitionIntoTargetClustersCore(untagged));
+        }
+        return out;
+    }
+
+    private List<List<DetectSignal>> partitionIntoTargetClustersCore(List<DetectSignal> networkSignals) {
         long netStart = networkSignals.stream().mapToLong(DetectSignal::getDetectTimesss).min().orElse(0L);
         long netEnd = networkSignals.stream().mapToLong(DetectSignal::getDetectTimesss).max().orElse(0L);
 
@@ -200,6 +290,55 @@ public class SignalAnalysisService {
             }
         }
         return bearingTrackMatchService.mergeMatchingClusters(targets, new BearingTrackMatchService.MatchOptions());
+    }
+
+    private List<List<DetectSignal>> coarseDutyBuckets(List<DetectSignal> signals) {
+        List<DetectSignal> sorted = new ArrayList<>(signals);
+        sorted.sort(Comparator.comparingLong(DetectSignal::getDetectTimesss)
+                .thenComparingDouble(DetectSignal::getAzimuth));
+        List<List<DetectSignal>> clusters = new ArrayList<>();
+        for (DetectSignal s : sorted) {
+            boolean placed = false;
+            for (List<DetectSignal> c : clusters) {
+                double ref = c.stream().mapToDouble(DetectSignal::getAzimuth).average().orElse(s.getAzimuth());
+                double d = Math.abs(s.getAzimuth() - ref);
+                if (d > 180) d = 360 - d;
+                if (d <= DUTY_COARSE_BEARING_GAP_DEG
+                        && Math.abs(s.getFreq() - c.get(0).getFreq()) <= 0.05) {
+                    c.add(s);
+                    placed = true;
+                    break;
+                }
+            }
+            if (!placed) {
+                List<DetectSignal> c = new ArrayList<>();
+                c.add(s);
+                clusters.add(c);
+            }
+        }
+        return clusters;
+    }
+
+    private static double estimateDutyPct(List<DetectSignal> signals) {
+        if (signals == null || signals.size() < 2) {
+            return 0d;
+        }
+        long t0 = Long.MAX_VALUE;
+        long t1 = Long.MIN_VALUE;
+        double active = 0d;
+        for (DetectSignal s : signals) {
+            t0 = Math.min(t0, s.getDetectTimesss());
+            t1 = Math.max(t1, s.getDetectTimesss());
+            active += Math.max(0d, s.getSignalDwellMs());
+        }
+        long span = t1 - t0;
+        if (span <= 0L) {
+            return 0d;
+        }
+        if (active <= 0d) {
+            active = signals.size() * 50.0;
+        }
+        return Math.min(100.0, active * 100.0 / span);
     }
 
     // ==================== 编批-1：同频网络划分 ====================
@@ -283,6 +422,7 @@ public class SignalAnalysisService {
                 target.setDetectEndMs(locate.detectEndMs);
                 target.setDetectCount(locate.detectCount);
                 communicationRhythmService.applyRhythmMetrics(target, targetSignals);
+                target.setClusteredSignals(targetSignals);
                 targets.add(target);
                 roleContexts.add(new MasterSlaveAnalysisService.TargetContext(target, targetSignals));
         }
@@ -775,8 +915,10 @@ public class SignalAnalysisService {
      *   <li>≥ {@value #DUTY_CYCLE_AWACS_PCT}% 且 &lt; 地面门限 → 预警机 AWACS</li>
      *   <li>否则 → 飞机 AIR</li>
      * </ul>
+     * 平均发信间隔（主周期，缺省 PRI）&gt; 2s 时锁定为飞机，不被占空比/椭圆/波道上调。
      * 测向：逐步进方位均差与 {@value #AZIMUTH_DF_ERROR_DEG}° 比较（测向误差门限）。
      * 误差椭圆 / 固定移动仅作低优先级辅证，不覆盖主判据的地面站结论。
+     * ≥11% 已是地面站，不再用「近 25% 灰色带」把预警机带上调为地面。
      */
     private void classifyPlatformType(MasterSlaveAnalysisService.TargetContext ctx,
                                     MotionClassificationService.MotionAssessment motion) {
@@ -786,28 +928,38 @@ public class SignalAnalysisService {
         target.setEmissionSharePct(sharePct);
         double dutyPct = target.getAvgDutyCycle();
         double azStep = azimuthDiffAvg(signals);
+        double driftRate = motion != null && motion.bearingDriftRate > 0
+                ? motion.bearingDriftRate
+                : bearingDriftRateDegPerSec(signals);
 
-        String primary;
+        String primary = CommunicationLinkAnalysisService.platformTypeByDuty(dutyPct);
         String primaryReason;
-        if (dutyPct >= DUTY_CYCLE_GROUND_PCT) {
-            primary = "GROUND";
+        if ("GROUND".equals(primary)) {
             primaryReason = String.format(
                     "主判据：发射占空比 %.1f%% ≥ %.0f%% → 地面站（同网发射占比 %.1f%%）",
                     dutyPct, DUTY_CYCLE_GROUND_PCT, sharePct);
-        } else if (dutyPct >= DUTY_CYCLE_AWACS_PCT) {
-            primary = "AWACS";
+        } else if ("AWACS".equals(primary)) {
             primaryReason = String.format(
-                    "主判据：发射占空比 %.1f%% ∈ [%.0f%%, %.0f%%) → 预警机（同网发射占比 %.1f%%）",
+                    "主判据：发射占空比 %.1f%% ∈ [%.1f%%, %.0f%%) → 预警机（同网发射占比 %.1f%%）",
                     dutyPct, DUTY_CYCLE_AWACS_PCT, DUTY_CYCLE_GROUND_PCT, sharePct);
         } else {
-            primary = "AIR";
             primaryReason = String.format(
-                    "主判据：发射占空比 %.1f%% < %.0f%% → 飞机（同网发射占比 %.1f%%）",
+                    "主判据：发射占空比 %.1f%% < %.1f%% → 飞机（同网发射占比 %.1f%%）",
                     dutyPct, DUTY_CYCLE_AWACS_PCT, sharePct);
         }
 
         String finalType = primary;
-        if ("AIR".equals(primary) && communicationLinkAnalysisService.qualifiesSecondaryAwacs(target)) {
+        boolean longIntervalAir = CommunicationLinkAnalysisService.isLongTxIntervalAir(target);
+        if (longIntervalAir) {
+            finalType = "AIR";
+            primaryReason = primaryReason + "；" + CommunicationLinkAnalysisService.longTxIntervalAirNote(target);
+        }
+        // 低占空比：占空比优先模式下默认 AIR，不做次级/椭圆上调
+        boolean lowDutyLockAir = DUTY_PRIORITY_CLASSIFY && dutyPct < DUTY_CYCLE_AWACS_PCT;
+        boolean lockAir = lowDutyLockAir || longIntervalAir;
+        if (!lockAir
+                && "AIR".equals(primary)
+                && communicationLinkAnalysisService.qualifiesSecondaryAwacs(target)) {
             finalType = "AWACS";
             primaryReason = primaryReason + "；" + communicationLinkAnalysisService.secondaryAwacsNote(target);
         }
@@ -815,36 +967,43 @@ public class SignalAnalysisService {
         String azNote = azStep <= AZIMUTH_DF_ERROR_DEG
                 ? String.format("测向稳定(逐步进均差 %.2f° ≤ %.1f°误差门限)", azStep, AZIMUTH_DF_ERROR_DEG)
                 : String.format("测向变化 %.2f°(门限 %.1f°)", azStep, AZIMUTH_DF_ERROR_DEG);
+        azNote += String.format("；方位漂移率≈%.4f°/s", driftRate);
 
         StringBuilder aux = new StringBuilder();
 
         if (motion != null) {
             aux.append(String.format("；【辅】%s", motion.detail));
-            if ("GROUND".equals(primary)) {
+            if (longIntervalAir) {
+                aux.append(" → 发信间隔>2s锁定飞机，跳过椭圆/测向上调");
+            } else if (lowDutyLockAir) {
+                aux.append(" → 占空比优先：低占空比锁定飞机，跳过椭圆/测向上调");
+            } else if ("GROUND".equals(primary)) {
                 // 主判据地面站不被椭圆推翻
             } else if ("AIR".equals(finalType)
                     && azStep <= AZIMUTH_DF_ERROR_DEG
+                    && driftRate < AWACS_MIN_DRIFT_DEG_PER_SEC
                     && ("FIXED".equals(motion.state)
                     || (motion.ellipseConverging && "CONVERGING".equals(motion.convergenceState)))) {
                 finalType = "GROUND";
-                aux.append(" → 辅证(椭圆固定/收敛+测向≤1°)上调为地面站");
+                aux.append(" → 辅证(椭圆固定/收敛+测向≤1°+低漂移)上调为地面站");
             } else if ("AWACS".equals(finalType)
                     && "MOBILE".equals(motion.state)
                     && !motion.ellipseConverging
                     && azStep > AZIMUTH_DF_ERROR_DEG * 5) {
                 finalType = "AIR";
                 aux.append(" → 辅证(椭圆移动且不收敛+测向漂移)下调为飞机");
-            } else if (dutyPct >= DUTY_CYCLE_GROUND_PCT - DUTY_CYCLE_GROUND_GRAY_PCT
-                    && dutyPct < DUTY_CYCLE_GROUND_PCT
-                    && ("FIXED".equals(motion.state) || motion.ellipseConverging)) {
-                finalType = "GROUND";
+            } else if ("AWACS".equals(finalType)
+                    && driftRate >= AWACS_MIN_DRIFT_DEG_PER_SEC) {
+                // 中占空比 + 系统性方位漂移：保持预警机，不因椭圆收紧抬成地面站
                 aux.append(String.format(
-                        " → 辅证(占空比近%.0f%%且椭圆倾向固定)上调为地面站", DUTY_CYCLE_GROUND_PCT));
+                        " → 方位漂移≥%.3f°/s，保持预警机（不以椭圆收紧上调地面站）",
+                        AWACS_MIN_DRIFT_DEG_PER_SEC));
             }
         }
 
-        if ("AWACS".equals(finalType) && azStep <= AZIMUTH_DF_ERROR_DEG) {
-            aux.append("；测向过稳(≤1°)，更接近固定站测向特征");
+        if ("AWACS".equals(finalType) && azStep <= AZIMUTH_DF_ERROR_DEG
+                && driftRate < AWACS_MIN_DRIFT_DEG_PER_SEC) {
+            aux.append("；测向过稳(≤1°)且漂移低，更接近固定站测向特征");
         }
         if ("GROUND".equals(finalType) && azStep > AZIMUTH_DF_ERROR_DEG) {
             aux.append("；测向抖动超1°门限，仍按发射占空比判地面站");
@@ -865,6 +1024,31 @@ public class SignalAnalysisService {
                 || target.getPeriodConfidence() < 0.50
                 || target.getBurstConfidence() < 0.50);
         target.setTargetTypeReason(primaryReason + "；" + azNote + aux);
+    }
+
+    /** 方位–时间线性斜率绝对值（°/s），区分固定站抖动与慢漂移 */
+    private static double bearingDriftRateDegPerSec(List<DetectSignal> signals) {
+        if (signals == null || signals.size() < 3) {
+            return 0d;
+        }
+        List<DetectSignal> sorted = new ArrayList<>(signals);
+        sorted.sort(Comparator.comparingLong(DetectSignal::getDetectTimesss));
+        long t0 = sorted.get(0).getDetectTimesss();
+        double sumX = 0, sumY = 0, sumXX = 0, sumXY = 0;
+        int n = sorted.size();
+        for (DetectSignal s : sorted) {
+            double x = (s.getDetectTimesss() - t0) / 1000.0;
+            double y = s.getAzimuth();
+            sumX += x;
+            sumY += y;
+            sumXX += x * x;
+            sumXY += x * y;
+        }
+        double den = n * sumXX - sumX * sumX;
+        if (Math.abs(den) < 1e-9) {
+            return 0d;
+        }
+        return Math.abs((n * sumXY - sumX * sumY) / den);
     }
 
     private double computeTargetConfidence(TargetView target, double dutyPct, double azStep, String finalType) {
@@ -1076,7 +1260,7 @@ public class SignalAnalysisService {
         summary.getNetworkConclusions().add(
                 "通信链规则：D01地空引导(地+小飞机)/D02异频(仅小飞机)/D03预警机单发/D04预警+地面/D05预警+战机/D06跨区协同(地+小飞机)；不符→不明");
         summary.getNetworkConclusions().add(
-                "平台类型：占空比≥25%→地面站，≥4%且<25%→预警机(PRI<2s可次级上调)，<4%→飞机；测向1°；波道驻留辅证");
+                "平台类型：占空比≥11%→地面站，3.2%–11%→预警机，<3.2%→飞机（占空比优先锁定）；平均发信间隔>2s→飞机；测向1°+漂移率辅证");
         summary.getNetworkConclusions().add(
                 "主从：流量占比(55%)+占空比(40%)为主；同网流量合计100%（优先 nSignalTime 驻留）");
         if (view.getSignalCount() > MAX_ANALYSIS_POINTS) {

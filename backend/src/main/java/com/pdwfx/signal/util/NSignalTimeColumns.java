@@ -19,15 +19,21 @@ import java.util.Set;
  */
 public final class NSignalTimeColumns {
 
+    /** 规范驻留列压缩大写名（去下划线）→ 映射键 NSIGNALTIME */
     public static final String CANONICAL_UPPER = "NSIGNALTIME";
+    /** 历史拼写驻留列 nSingnalTime 的压缩大写名 */
     public static final String LEGACY_UPPER = "NSINGNALTIME";
+    /** 信号起始时刻列 nSignalStartTime 的压缩大写名（非驻留） */
     public static final String START_UPPER = "NSIGNALSTARTTIME";
 
+    /** 规范驻留列原始表头名 */
     public static final String COL_CANONICAL = "nSignalTime";
+    /** 历史拼写驻留列原始表头名 */
     public static final String COL_LEGACY = "nSingnalTime";
+    /** 信号起始时刻列原始表头名 */
     public static final String COL_START = "nSignalStartTime";
 
-    /** 10µs/计数 → 毫秒 */
+    /** 10µs/计数 → 毫秒的换算系数（×0.01） */
     public static final double TO_MS = 10.0 / 1000.0;
 
     private NSignalTimeColumns() {

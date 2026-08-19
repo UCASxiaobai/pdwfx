@@ -28,6 +28,8 @@ public class SceneProcessResponse {
     /** 本场景被跳过（如无可用导出数据），不参与信号分析 */
     private boolean skipped;
     private String skipReason;
+    /** 指挥网二次场景（占用窗内同频全量点重建） */
+    private boolean commandNet;
 
     public int getRank() {
         return rank;
@@ -139,5 +141,13 @@ public class SceneProcessResponse {
 
     public void setSkipReason(String skipReason) {
         this.skipReason = skipReason;
+    }
+
+    public boolean isCommandNet() {
+        return commandNet;
+    }
+
+    public void setCommandNet(boolean commandNet) {
+        this.commandNet = commandNet;
     }
 }

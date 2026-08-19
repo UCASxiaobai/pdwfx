@@ -10,9 +10,11 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 
-/** 前置：外部 DTO → {@link DetectSignal} */
+/** 前置：外部 DTO → {@link DetectSignal}（校验必填字段并统一时间/驻留单位） */
 public final class SignalInputMapper {
+    /** CSV 常见时间：yyyy-MM-dd HH:mm:ss.SSS */
     private static final DateTimeFormatter CSV_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
+    /** ISO_LOCAL_DATE_TIME（可带 T） */
     private static final DateTimeFormatter ISO_TIME = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
 
     private SignalInputMapper() {}

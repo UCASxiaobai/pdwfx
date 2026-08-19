@@ -13,9 +13,11 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -34,16 +36,38 @@ public class PollingTrackBuilderService {
         private final int laneCount;
         private final int alignedRoundCount;
 
+        private final Integer interrogatorTrackId;
+        private final int responderLaneCount;
+        private final int channelTargetCount;
+        private final Double interrogatorBearingDeg;
+
         LaneBuildResult(
                 List<BearingTrack> tracks,
                 Map<SourceRowRef, Integer> rowToTrackId,
                 int laneCount,
                 int alignedRoundCount
         ) {
+            this(tracks, rowToTrackId, laneCount, alignedRoundCount, null, laneCount, laneCount, null);
+        }
+
+        LaneBuildResult(
+                List<BearingTrack> tracks,
+                Map<SourceRowRef, Integer> rowToTrackId,
+                int laneCount,
+                int alignedRoundCount,
+                Integer interrogatorTrackId,
+                int responderLaneCount,
+                int channelTargetCount,
+                Double interrogatorBearingDeg
+        ) {
             this.tracks = tracks == null ? Collections.emptyList() : tracks;
             this.rowToTrackId = rowToTrackId == null ? Collections.emptyMap() : rowToTrackId;
             this.laneCount = laneCount;
             this.alignedRoundCount = alignedRoundCount;
+            this.interrogatorTrackId = interrogatorTrackId;
+            this.responderLaneCount = responderLaneCount;
+            this.channelTargetCount = channelTargetCount;
+            this.interrogatorBearingDeg = interrogatorBearingDeg;
         }
 
         public static LaneBuildResult empty() {
@@ -65,6 +89,22 @@ public class PollingTrackBuilderService {
         public int getAlignedRoundCount() {
             return alignedRoundCount;
         }
+
+        public Integer getInterrogatorTrackId() {
+            return interrogatorTrackId;
+        }
+
+        public int getResponderLaneCount() {
+            return responderLaneCount;
+        }
+
+        public int getChannelTargetCount() {
+            return channelTargetCount;
+        }
+
+        public Double getInterrogatorBearingDeg() {
+            return interrogatorBearingDeg;
+        }
     }
 
     /**
@@ -85,9 +125,24 @@ public class PollingTrackBuilderService {
             return LaneBuildResult.empty();
         }
 
+        List<DetectionPoint> burstSource = inScene;
+        if (scene.getInterrogatorBearingDeg() != null) {
+            burstSource = new ArrayList<DetectionPoint>();
+            double matchDeg = Math.max(2.0, props.getPollingMinInterClusterSeparationDeg());
+            for (DetectionPoint p : inScene) {
+                if (Math.abs(BearingMath.shortestDelta(p.getBearingDeg(), scene.getInterrogatorBearingDeg()))
+                        > matchDeg) {
+                    burstSource.add(p);
+                }
+            }
+        }
+        if (burstSource.size() < props.getPollingMinBearingsPerBurst() * 2) {
+            return LaneBuildResult.empty();
+        }
+
         long coalesceMillis = Math.max(1, Math.round(props.getPollingBurstCoalesceSec() * 1000.0));
         double mergeGapDeg = props.getPollingBurstBearingGapDeg();
-        List<BurstSnapshot> bursts = detectValidBursts(inScene, coalesceMillis, mergeGapDeg, props);
+        List<BurstSnapshot> bursts = detectValidBursts(burstSource, coalesceMillis, mergeGapDeg, props);
         if (bursts.size() < 2) {
             return LaneBuildResult.empty();
         }
@@ -99,45 +154,64 @@ public class PollingTrackBuilderService {
 
         int minRoundHits = PollingAlignmentUtil.minRoundHits(
                 aligned.size(), props.getPollingMinSlotRoundCoverageRatio());
-        List<Double> persistentSlots = identifyPersistentSlotCenters(aligned, minRoundHits, props);
-        if (persistentSlots.size() < props.getPollingMinBearingsPerBurst()) {
+        List<Double> laneSlots = identifyPersistentSlotCenters(aligned, minRoundHits, props);
+        if (laneSlots.size() < 2) {
             return LaneBuildResult.empty();
         }
 
-        List<BearingTrack> laneTracks = new ArrayList<>(persistentSlots.size());
-        for (int i = 0; i < persistentSlots.size(); i++) {
+        Integer interrogatorTrackId = scene.getInterrogatorTrackId();
+        Double interrogatorBearing = scene.getInterrogatorBearingDeg();
+
+        List<BearingTrack> laneTracks = new ArrayList<BearingTrack>(laneSlots.size());
+        for (int i = 0; i < laneSlots.size(); i++) {
             BearingTrack track = new BearingTrack();
             track.setId(startTrackId + i);
+            track.setSuggestedPlatformType("AIR");
+            track.setPollingRole("RESPONDER");
             laneTracks.add(track);
         }
 
-        Map<SourceRowRef, Integer> rowToTrackId = new LinkedHashMap<>();
-        int[] slotRoundHits = new int[persistentSlots.size()];
+        int[] slotRoundHits = new int[laneSlots.size()];
+        Map<SourceRowRef, Integer> rowToTrackId = new LinkedHashMap<SourceRowRef, Integer>();
 
         for (BurstSnapshot burst : aligned) {
             List<PollingBurstClustering.BearingCluster> clusters = burst.getClusters();
             if (clusters.isEmpty()) {
                 continue;
             }
-            int[] assignment = assignClustersToLanes(persistentSlots, clusters, persistentSlots.size());
-            for (int slot = 0; slot < persistentSlots.size(); slot++) {
+            List<PollingBurstClustering.BearingCluster> assignable = clusters;
+            if (interrogatorBearing != null) {
+                assignable = new ArrayList<PollingBurstClustering.BearingCluster>();
+                for (PollingBurstClustering.BearingCluster c : clusters) {
+                    if (Math.abs(BearingMath.shortestDelta(c.getCenterDeg(), interrogatorBearing))
+                            > Math.max(2.0, props.getPollingMinInterClusterSeparationDeg())) {
+                        assignable.add(c);
+                    }
+                }
+            }
+            if (assignable.isEmpty()) {
+                continue;
+            }
+            int[] assignment = assignClustersToLanes(laneSlots, assignable, laneSlots.size());
+            for (int slot = 0; slot < laneSlots.size(); slot++) {
                 int clusterIdx = assignment[slot];
-                if (clusterIdx < 0 || clusterIdx >= clusters.size()) {
+                if (clusterIdx < 0 || clusterIdx >= assignable.size()) {
                     continue;
                 }
                 slotRoundHits[slot]++;
                 BearingTrack track = laneTracks.get(slot);
-                PollingBurstClustering.BearingCluster cluster = clusters.get(clusterIdx);
+                PollingBurstClustering.BearingCluster cluster = assignable.get(clusterIdx);
                 for (DetectionPoint point : cluster.getPoints()) {
-                    rowToTrackId.put(point.sourceRow(), track.getId());
+                    rowToTrackId.put(point.sourceRow(), Integer.valueOf(track.getId()));
                 }
                 track.getObservations().add(roundObservation(cluster, burst.getCenterTime()));
             }
         }
 
-        List<BearingTrack> nonEmpty = new ArrayList<>();
-        Map<SourceRowRef, Integer> filteredRows = new LinkedHashMap<>();
-        for (int slot = 0; slot < persistentSlots.size(); slot++) {
+        List<BearingTrack> nonEmpty = new ArrayList<BearingTrack>();
+        Map<SourceRowRef, Integer> filteredRows = new LinkedHashMap<SourceRowRef, Integer>();
+        Set<Integer> keptResponderIds = new HashSet<Integer>();
+        for (int slot = 0; slot < laneSlots.size(); slot++) {
             if (slotRoundHits[slot] < minRoundHits) {
                 continue;
             }
@@ -147,15 +221,48 @@ public class PollingTrackBuilderService {
             }
             track.getObservations().sort(Comparator.comparing(TrackObservation::getTime));
             nonEmpty.add(track);
-            for (TrackObservation obs : track.getObservations()) {
-                filteredRows.put(obs.sourceRow(), track.getId());
-            }
+            keptResponderIds.add(Integer.valueOf(track.getId()));
         }
-        if (nonEmpty.isEmpty()) {
+        if (keptResponderIds.size() < 2) {
             return LaneBuildResult.empty();
         }
-
-        return new LaneBuildResult(nonEmpty, filteredRows, nonEmpty.size(), aligned.size());
+        double matchDeg = Math.max(2.0, props.getPollingMinInterClusterSeparationDeg());
+        for (DetectionPoint p : burstSource) {
+            if (rowToTrackId.containsKey(p.sourceRow())) {
+                continue;
+            }
+            int bestSlot = -1;
+            double bestGap = Double.POSITIVE_INFINITY;
+            for (int slot = 0; slot < laneSlots.size(); slot++) {
+                if (!keptResponderIds.contains(Integer.valueOf(laneTracks.get(slot).getId()))) {
+                    continue;
+                }
+                double gap = Math.abs(BearingMath.shortestDelta(p.getBearingDeg(), laneSlots.get(slot)));
+                if (gap <= matchDeg && gap < bestGap) {
+                    bestGap = gap;
+                    bestSlot = slot;
+                }
+            }
+            if (bestSlot >= 0) {
+                rowToTrackId.put(p.sourceRow(), Integer.valueOf(laneTracks.get(bestSlot).getId()));
+            }
+        }
+        for (Map.Entry<SourceRowRef, Integer> e : rowToTrackId.entrySet()) {
+            if (keptResponderIds.contains(e.getValue())) {
+                filteredRows.put(e.getKey(), e.getValue());
+            }
+        }
+        int responderCount = keptResponderIds.size();
+        int channelTargets = interrogatorTrackId != null ? responderCount + 1 : responderCount;
+        return new LaneBuildResult(
+                nonEmpty,
+                filteredRows,
+                nonEmpty.size(),
+                aligned.size(),
+                interrogatorTrackId,
+                responderCount,
+                channelTargets,
+                interrogatorBearing);
     }
 
     /** 每轮每槽仅保留一个代表点（簇心方位 + 轮次中心时刻），避免同轮多点被连成折线。 */
@@ -172,8 +279,11 @@ public class PollingTrackBuilderService {
 
     private static List<DetectionPoint> filterScenePoints(QualityScene scene, List<DetectionPoint> allPoints) {
         List<DetectionPoint> inScene = new ArrayList<>();
+        long padMs = 2000L;
+        Instant start = scene.getWindowStart().minusMillis(padMs);
+        Instant end = scene.getWindowEnd().plusMillis(padMs);
         for (DetectionPoint p : allPoints) {
-            if (p.getTime().isBefore(scene.getWindowStart()) || p.getTime().isAfter(scene.getWindowEnd())) {
+            if (p.getTime().isBefore(start) || p.getTime().isAfter(end)) {
                 continue;
             }
             if (p.getFrequencyMhz() < scene.getFreqMinMhz() - 0.01

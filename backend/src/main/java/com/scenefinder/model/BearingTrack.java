@@ -28,6 +28,14 @@ public final class BearingTrack {
     /** 该轨迹关联到的所有检测观测（含源行号） */
     private final List<TrackObservation> observations = new ArrayList<>();
 
+    /**
+     * 占空比优先建轨时的建议平台类型：GROUND / AWACS / AIR；未启用时为 null。
+     */
+    private String suggestedPlatformType;
+
+    /** 粗桶估计占空比（%）；未启用占空比优先时为 0 */
+    private double coarseDutyPct;
+
     public int getId() {
         return id;
     }
@@ -78,6 +86,33 @@ public final class BearingTrack {
 
     public List<TrackObservation> getObservations() {
         return observations;
+    }
+
+    public String getSuggestedPlatformType() {
+        return suggestedPlatformType;
+    }
+
+    public void setSuggestedPlatformType(String suggestedPlatformType) {
+        this.suggestedPlatformType = suggestedPlatformType;
+    }
+
+    public double getCoarseDutyPct() {
+        return coarseDutyPct;
+    }
+
+    public void setCoarseDutyPct(double coarseDutyPct) {
+        this.coarseDutyPct = coarseDutyPct;
+    }
+
+    /** 轮询路线角色：INTERROGATOR / RESPONDER；单发连续轨为 null */
+    private String pollingRole;
+
+    public String getPollingRole() {
+        return pollingRole;
+    }
+
+    public void setPollingRole(String pollingRole) {
+        this.pollingRole = pollingRole;
     }
 
     public Instant startTime() {

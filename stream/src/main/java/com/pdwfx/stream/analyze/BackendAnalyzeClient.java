@@ -2,6 +2,7 @@ package com.pdwfx.stream.analyze;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.pdwfx.stream.config.StreamProperties;
 import org.slf4j.Logger;
@@ -109,6 +110,33 @@ public class BackendAnalyzeClient {
                 url, sceneRank, outputDir, properties.getAnalyze().isPreloadAll());
         ResponseEntity<String> resp = restTemplate.postForEntity(url, entity, String.class);
         return readJson(resp.getBody(), "process-scene");
+    }
+
+    /** 预警机指挥网二次：占用窗筛点、重建并替换重叠一次场景 */
+    public JsonNode commandNetPass(String sourceCsvPath, String outputDir, java.util.List<String> analysisIds) {
+        String base = trimSlash(properties.getAnalyze().getBaseUrl());
+        String url = base + "/api/scenes/command-net-pass";
+
+        ObjectNode body = objectMapper.createObjectNode();
+        body.put("sourceCsvPath", sourceCsvPath);
+        body.put("outputDir", outputDir);
+        body.put("freqTolerance", properties.getAnalyze().getFreqTolerance());
+        body.put("preloadAll", properties.getAnalyze().isPreloadAll());
+        ArrayNode ids = body.putArray("analysisIds");
+        if (analysisIds != null) {
+            for (String id : analysisIds) {
+                if (id != null && !id.isEmpty()) {
+                    ids.add(id);
+                }
+            }
+        }
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        HttpEntity<String> entity = new HttpEntity<>(body.toString(), headers);
+        log.info("POST {} outputDir={} sessions={}", url, outputDir, ids.size());
+        ResponseEntity<String> resp = restTemplate.postForEntity(url, entity, String.class);
+        return readJson(resp.getBody(), "command-net-pass");
     }
 
     /** @deprecated 保留兼容；流式主路径已改为场景流水线 */

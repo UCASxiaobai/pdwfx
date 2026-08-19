@@ -16,6 +16,10 @@ import com.scenefinder.model.SceneProcessResponse;
 
 import com.scenefinder.model.SceneReportChunkResponse;
 
+import com.scenefinder.model.CommandNetPassResponse;
+
+import com.scenefinder.web.CommandNetPassRequest;
+
 import com.scenefinder.web.SceneOverlapProcessRequest;
 
 import com.scenefinder.web.SceneProcessRequest;
@@ -56,6 +60,8 @@ public class ScenePipelineService {
 
     private final ObjectMapper objectMapper;
 
+    private final AwacsCommandNetPassService commandNetPassService;
+
 
 
     public ScenePipelineService(
@@ -66,7 +72,9 @@ public class ScenePipelineService {
 
             SceneOverlapGrouper overlapGrouper,
 
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+
+            AwacsCommandNetPassService commandNetPassService
 
     ) {
 
@@ -77,6 +85,8 @@ public class ScenePipelineService {
         this.overlapGrouper = overlapGrouper;
 
         this.objectMapper = objectMapper;
+
+        this.commandNetPassService = commandNetPassService;
 
     }
 
@@ -283,6 +293,12 @@ public class ScenePipelineService {
     public List<SceneOverlapGroup> planOverlapGroups(String outputDir, List<Integer> sceneRanks) throws IOException {
 
         return overlapGrouper.group(Paths.get(outputDir), sceneRanks);
+
+    }
+
+    public CommandNetPassResponse applyCommandNetSecondPass(CommandNetPassRequest request) throws IOException {
+
+        return commandNetPassService.run(request);
 
     }
 

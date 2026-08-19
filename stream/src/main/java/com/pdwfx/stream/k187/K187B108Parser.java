@@ -46,30 +46,51 @@ public class K187B108Parser {
     public static final int INFO_TYPE_B108 = INFO_TYPE_KEEP;
 
     public static final class ParseStats {
+        /** 进入解析的 TCP/缓冲包总数（含非保留 infoType） */
         public long packets;
+        /** infoType 命中保留类型（当前 0xB107）的包数 */
         public long b108Packets;
+        /** 成功产出并去重后的 PDW 条数 */
         public long records;
+        /** DOA 融合失败或无效（doaMean=4000）而跳过的 FFData 条数 */
         public long skippedDoa;
+        /** infoType 非保留而整包丢弃的次数 */
         public long skippedOtherType;
+        /** packHead 魔数不匹配 */
         public long skippedBadMagic;
+        /** curPackLen 大于实际缓冲长度 */
         public long skippedBadLength;
+        /** packHead ≠ 0x7E8118E7 的累计次数（与 skippedBadMagic 同步递增） */
         public long head3PackHeadMismatch;
     }
 
-    /** 最近一次 Head3 快照（status / 断点） */
+    /** 最近一次 Head3 快照（status / 断点排查） */
     public static final class Head3Snapshot {
+        /** 报文头魔数，期望 0x7E8118E7 */
         public int packHead;
+        /** 当前包声明长度（含本头），单位字节 */
         public int curPackLen;
+        /** 目的地址 */
         public int tgtAddr;
+        /** 源地址 */
         public int srcAddr;
+        /** 信息类别号；低 16 位与 INFO_TYPE_KEEP 比较决定是否保留 */
         public int infoType;
+        /** 发报时间：高 32 位秒（相对 1970-1-1），低 32 位秒内 ns */
         public long infoTime;
+        /** 流水序号 */
         public int seqNo;
+        /** 总分包数 */
         public int packAmount;
+        /** 当前包序号（1-based 语义依对端） */
         public int packNo;
+        /** 报文内容总长（不含指令头），单位字节 */
         public int dataLen;
+        /** 协议/软件版本字 */
         public int version;
+        /** 实际收到的缓冲字节数 */
         public int bufferLength;
+        /** infoTime 格式化为可读本地时间，失败时为 raw=0x… */
         public String infoTimeText;
 
         @Override
@@ -86,6 +107,19 @@ public class K187B108Parser {
 
     public ParseStats getStats() { return stats; }
     public Head3Snapshot getLastHead3() { return lastHead3.get(); }
+
+    /** 重启接收：清零解析计数与最近 Head3 快照。 */
+    public void resetStats() {
+        stats.packets = 0L;
+        stats.b108Packets = 0L;
+        stats.records = 0L;
+        stats.skippedDoa = 0L;
+        stats.skippedOtherType = 0L;
+        stats.skippedBadMagic = 0L;
+        stats.skippedBadLength = 0L;
+        stats.head3PackHeadMismatch = 0L;
+        lastHead3.set(null);
+    }
 
     public List<PdwRecord> parsePacket(byte[] packet) {
         return parseHead3Packet(packet);
@@ -168,36 +202,42 @@ public class K187B108Parser {
         if (le.remaining() < FF_HEAD_LEN) {
             return out;
         }
-        // ---- FFHead ----
-        int infoLength = le.readU32();
-        le.readU64(); // taskId
-        le.readU64(); // sFreq
-        le.readU64(); // dK
-        LocalDateTime ffTime = readSystemTime(le);
-        le.readU64(); // fpga
-        int longitude = le.readU32();
-        int latitude = le.readU32();
-        le.readU32(); // height
-        le.readU32(); // pitch
-        le.readU32(); // roll
-        le.readU16(); // speed
-        int course = le.readU32();
-        int infoNum = le.readU16() & 0xffff; // 后续 FFData 条数
+        // ---- FFHead（平台姿态与后续 FFData 条数）----
+        int infoLength = le.readU32();          // 信息区长度
+        le.readU64(); // taskId                 // 任务号（未使用）
+        le.readU64(); // sFreq                  // 起频等（未使用）
+        le.readU64(); // dK                     // 带宽/步进相关（未使用）
+        LocalDateTime ffTime = readSystemTime(le); // 系统时：年…毫秒，共 8×u16
+        le.readU64(); // fpga                   // FPGA 时标（未使用）
+        int longitude = le.readU32();           // 平台经度，微度（÷1e6 → °）
+        int latitude = le.readU32();            // 平台纬度，微度
+        le.readU32(); // height                 // 高度
+        int pitchRaw = le.readU32();            // 俯仰原始定点
+        int rollRaw = le.readU32();             // 横滚原始定点
+        le.readU16(); // speed                  // 地速
+        int course = le.readU32();              // 航向，用于 DOA→真北修正
+        int infoNum = le.readU16() & 0xffff;    // 后续 FFData 条数
+
+        // 与 course÷100 → ° 同刻度（可被 StreamProperties.attitudeScale 覆盖时仅落盘侧再缩放）
+        double pitchDeg = pitchRaw / 100.0;
+        double rollDeg = rollRaw / 100.0;
+        double courseDeg = course / 100.0;
 
         LocalDateTime baseTime = ffTime != null ? ffTime : headTime;
-        Set<String> unique = new HashSet<>();
+        Set<String> unique = new HashSet<>();   // 频点|方位|时刻 去重键
         for (int i = 0; i < infoNum; i++) {
             if (le.remaining() < FF_DATA_LEN) {
                 break;
             }
-            int qTsc = le.readU32();
-            long pLzx = le.readU64();
-            int zLsj = le.readU32();
-            short gMdk = le.readU16();
-            short fD = le.readU16();
-            le.readU16(); // fWgs
-            short[] fw = le.readU16Array(28);
-            le.readBytes(28);
+            // ---- FFData 单条（109B）----
+            int qTsc = le.readU32();            // 信号起始相对时，单位 10µs → nSignalStartTime
+            long pLzx = le.readU64();           // 载频 Hz → freqMhz
+            int zLsj = le.readU32();            // 驻留计数，单位 10µs → nSignalTime
+            short gMdk = le.readU16();          // 带宽 Hz → signalBwKhz
+            short fD = le.readU16();            // 幅度 dB → signalLevelDb
+            le.readU16(); // fWgs               // 未用
+            short[] fw = le.readU16Array(28);   // 28 路 DOA 直方图样本（0.1°）
+            le.readBytes(28);                   // 预留
             le.readU8();
             le.readU8();
             le.readU8();
@@ -206,6 +246,7 @@ public class K187B108Parser {
             for (int j = 0; j < 28; j++) {
                 fwList.add(fw[j]);
             }
+            // 主峰融合；rangeCountTh=21 与 cet36 一致；失败则丢弃本条
             DoaHistChiefZhang.Result doa = DoaHistChiefZhang.fuse(fwList, pLzx / 1000L, 21);
             if (doa.code != 0 || doa.doaMean == 4000) {
                 stats.skippedDoa++;
@@ -214,6 +255,7 @@ public class K187B108Parser {
             short xhfw01 = DoaHistChiefZhang.toTrueAzimuth(doa.doaMean, course);
             LocalDateTime zcsj = baseTime;
             if (zcsj != null) {
+                // 联调：基准时 +8h，再叠加 qTsc×10µs
                 zcsj = zcsj.plusHours(8).plusNanos((long) qTsc * 10_000L);
             }
 
@@ -227,6 +269,9 @@ public class K187B108Parser {
             rec.setLatitude(latitude / 1_000_000.0);
             rec.setNSignalTime10us(zLsj & 0xffffffffL);
             rec.setNSignalStartTime10us(qTsc & 0xffffffffL);
+            rec.setPitchDeg(pitchDeg);
+            rec.setRollDeg(rollDeg);
+            rec.setCourseDeg(courseDeg);
 
             String key = rec.getFreqMhz() + "|" + rec.getAzimuthDeg() + "|" + rec.getDetectTime();
             if (unique.add(key)) {

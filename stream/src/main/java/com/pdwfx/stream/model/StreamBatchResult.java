@@ -32,6 +32,8 @@ public class StreamBatchResult {
     private List<Map<String, Object>> reportRows = new ArrayList<>();
     /** 波道/频点/目标类型占用汇总 */
     private Map<String, Object> occupancy = new LinkedHashMap<>();
+    /** 指挥网二次：skipped / skipReason / awacsPanels（供流式页按预警机展示） */
+    private Map<String, Object> commandNetPass = new LinkedHashMap<>();
 
     public String getStreamBatchId() { return streamBatchId; }
     public void setStreamBatchId(String streamBatchId) { this.streamBatchId = streamBatchId; }
@@ -78,5 +80,9 @@ public class StreamBatchResult {
     public Map<String, Object> getOccupancy() { return occupancy; }
     public void setOccupancy(Map<String, Object> occupancy) {
         this.occupancy = occupancy != null ? occupancy : new LinkedHashMap<String, Object>();
+    }
+    public Map<String, Object> getCommandNetPass() { return commandNetPass; }
+    public void setCommandNetPass(Map<String, Object> commandNetPass) {
+        this.commandNetPass = commandNetPass != null ? commandNetPass : new LinkedHashMap<String, Object>();
     }
 }

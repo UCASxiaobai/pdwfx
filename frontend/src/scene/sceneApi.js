@@ -68,15 +68,15 @@ export async function processScene(body, signal) {
 /** 逐场景同频分析（每个场景独立 analysisId） */
 export async function processScenesPipeline(
   { sourceCsvPath, outputDir, sceneRanks, freqTolerance, preloadAll },
-  { signal, onProgress, onPartialRows }
+  { signal, onProgress, onPartialRows, onCommandNet }
 ) {
   // 始终按预筛选序号升序分析，避免勾选顺序打乱结果表与场景对应关系
   const ranks = [...(sceneRanks || [])]
     .map(Number)
     .filter((r) => Number.isFinite(r) && r > 0)
     .sort((a, b) => a - b);
-  const forwardItems = [];
-  const allRows = [];
+  let forwardItems = [];
+  let allRows = [];
   let totalMs = 0;
 
   for (let i = 0; i < ranks.length; i++) {
@@ -106,12 +106,73 @@ export async function processScenesPipeline(
     totalMs += result.elapsedMs || 0;
   }
 
+  onCommandNet?.();
+  const analysisIds = forwardItems
+    .map((item) => item.session && item.session.analysisId)
+    .filter((id) => !!id);
+  let pass = { skipped: true, skipReason: "没有一次分析会话", items: [], replacedRanks: [], elapsedMs: 0 };
+  if (analysisIds.length) {
+    try {
+      pass = await runCommandNetPass(
+        {
+          sourceCsvPath,
+          outputDir,
+          freqTolerance,
+          analysisIds,
+          preloadAll
+        },
+        signal
+      );
+    } catch (err) {
+      pass = {
+        skipped: true,
+        skipReason: (err && err.message) || "指挥网二次失败",
+        items: [],
+        replacedRanks: [],
+        elapsedMs: 0
+      };
+    }
+    totalMs += pass.elapsedMs || 0;
+    if (!pass.skipped) {
+      const replaced = new Set((pass.replacedRanks || []).map(Number));
+      forwardItems = forwardItems.filter((item) => !replaced.has(Number(item.rank)));
+      allRows = allRows.filter((row) => !replaced.has(Number(row.sceneRank)));
+      for (const item of pass.items || []) {
+        forwardItems.push({
+          rank: item.rank,
+          sceneType: item.sceneType,
+          exportedRowCount: item.exportedRowCount,
+          exportedCsvPath: item.exportedCsvPath,
+          session: item.session,
+          commandNet: true
+        });
+        if (item.reportRows && item.reportRows.length) {
+          allRows.push(...item.reportRows);
+        }
+      }
+      onPartialRows?.(allRows, ranks.length, ranks.length);
+    }
+  }
+
   return {
     forwardItems,
     rows: allRows,
     buildTimeMs: totalMs,
-    networkDetailCount: forwardItems.length
+    networkDetailCount: forwardItems.length,
+    commandNetPass: pass
   };
+}
+
+export async function runCommandNetPass(body, signal) {
+  const res = await fetch(apiUrl("/api/scenes/command-net-pass"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(parseApiError(text, res.status));
+  return JSON.parse(text);
 }
 
 /** 会话被驱逐时从场景导出 CSV 恢复（返回新的或现有的 analysisId） */

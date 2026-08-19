@@ -2,17 +2,21 @@ package com.scenefinder.service;
 
 import com.scenefinder.config.SceneFinderProperties;
 import com.scenefinder.model.BearingMath;
+import com.scenefinder.model.BearingTrack;
 import com.scenefinder.model.DetectionPoint;
 import com.scenefinder.model.FrequencyBandUtils;
 import com.scenefinder.model.QualityScene;
+import com.scenefinder.model.TrackObservation;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -28,16 +32,29 @@ public class MultiDevicePollingDetectorService {
 
     /**
      * 在检测点序列中发现轮询通信候选场景（未与轨迹场景融合、未最终排名）。
+     * 不要求同频预警机/地面站重叠，供孤立模式单测使用。
      */
     public List<QualityScene> findPollingScenes(List<DetectionPoint> points, SceneFinderProperties props) {
-        if (points.isEmpty()) {
+        return findPollingScenes(points, null, props);
+    }
+
+    /**
+     * @param persistentTracks 非 null 时要求窗与至少一条 GROUND/AWACS 连续轨同频时间重叠；
+     *                         空列表则全部淘汰。null 表示跳过该硬门槛。
+     */
+    public List<QualityScene> findPollingScenes(
+            List<DetectionPoint> points,
+            List<BearingTrack> persistentTracks,
+            SceneFinderProperties props
+    ) {
+        if (points == null || points.isEmpty()) {
             return Collections.emptyList();
         }
 
         List<List<DetectionPoint>> bands = FrequencyBandUtils.partitionPoints(
                 points, props.getFreqClusterGapMhz());
 
-        List<ScoredPollingWindow> candidates = new ArrayList<>();
+        List<ScoredPollingWindow> candidates = new ArrayList<ScoredPollingWindow>();
         for (List<DetectionPoint> band : bands) {
             if (band.size() < props.getPollingMinBurstsInWindow() * 2) {
                 continue;
@@ -46,11 +63,16 @@ public class MultiDevicePollingDetectorService {
             if (bursts.size() < props.getPollingMinBurstsInWindow()) {
                 continue;
             }
-            candidates.addAll(scoreSlidingWindows(bursts, band, props));
+            List<ScoredPollingWindow> scored = scoreSlidingWindows(bursts, band, props);
+            if (persistentTracks != null) {
+                scored = attachPersistentInterrogator(scored, persistentTracks, props);
+            }
+            candidates.addAll(scored);
         }
 
-        candidates.sort(Comparator.comparingDouble(ScoredPollingWindow::getScore).reversed());
-        List<QualityScene> result = new ArrayList<>();
+        candidates.sort(Comparator.comparingDouble(ScoredPollingWindow::getHypothesisQuality).reversed()
+                .thenComparing(Comparator.comparingDouble(ScoredPollingWindow::getScore).reversed()));
+        List<QualityScene> result = new ArrayList<QualityScene>();
         int rank = 1;
         for (ScoredPollingWindow w : candidates) {
             result.add(QualityScene.pollingScene(
@@ -67,13 +89,112 @@ public class MultiDevicePollingDetectorService {
                     round(w.getAvgBearingsPerBurst()),
                     w.getTypicalBearingsPerBurst(),
                     round(w.getPeriodicityScore())
-            ));
+            ).withCallsignMeta(
+                    w.getInterrogatorTrackId(),
+                    w.getInterrogatorBearingDeg(),
+                    0,
+                    0,
+                    null
+            ).withHypothesisQuality(w.getHypothesisQuality()));
         }
         return result;
     }
 
     /**
-     * 将时间相近的检测点合并为 burst，筛出「多方位、非单簇主导」的轮次。
+     * 同频时间重叠的 GROUND/AWACS 连续轨作为询问侧上下文；没有则淘汰该窗。
+     */
+    private List<ScoredPollingWindow> attachPersistentInterrogator(
+            List<ScoredPollingWindow> scored,
+            List<BearingTrack> persistentTracks,
+            SceneFinderProperties props
+    ) {
+        if (scored.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<ScoredPollingWindow> kept = new ArrayList<ScoredPollingWindow>();
+        for (ScoredPollingWindow w : scored) {
+            BearingTrack hit = findOverlappingPersistent(w, persistentTracks, props);
+            if (hit == null) {
+                continue;
+            }
+            kept.add(w.withInterrogator(meanTrackBearing(hit), Integer.valueOf(hit.getId())));
+        }
+        return kept;
+    }
+
+    private static BearingTrack findOverlappingPersistent(
+            ScoredPollingWindow w,
+            List<BearingTrack> persistentTracks,
+            SceneFinderProperties props
+    ) {
+        if (persistentTracks == null || persistentTracks.isEmpty()) {
+            return null;
+        }
+        double freqGap = Math.max(0.01, props.getFreqClusterGapMhz());
+        BearingTrack best = null;
+        for (BearingTrack track : persistentTracks) {
+            if (!isPersistentPlatform(track)) {
+                continue;
+            }
+            if (track.endTime().isBefore(w.getWindowStart()) || track.startTime().isAfter(w.getWindowEnd())) {
+                continue;
+            }
+            if (!freqOverlapsWindow(track, w, freqGap)) {
+                continue;
+            }
+            if (best == null) {
+                best = track;
+                continue;
+            }
+            if ("AWACS".equals(track.getSuggestedPlatformType())
+                    && !"AWACS".equals(best.getSuggestedPlatformType())) {
+                best = track;
+            }
+        }
+        return best;
+    }
+
+    static boolean isPersistentPlatform(BearingTrack track) {
+        if (track == null) {
+            return false;
+        }
+        String p = track.getSuggestedPlatformType();
+        return "GROUND".equals(p) || "AWACS".equals(p);
+    }
+
+    private static boolean freqOverlapsWindow(BearingTrack track, ScoredPollingWindow w, double freqGap) {
+        double f = FrequencyBandUtils.dominantFrequencyMhz(track);
+        if (f >= w.getFreqMinMhz() - freqGap && f <= w.getFreqMaxMhz() + freqGap) {
+            return true;
+        }
+        for (TrackObservation obs : track.getObservations()) {
+            if (obs.getFrequencyMhz() >= w.getFreqMinMhz() - freqGap
+                    && obs.getFrequencyMhz() <= w.getFreqMaxMhz() + freqGap) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static double meanTrackBearing(BearingTrack track) {
+        double sin = 0;
+        double cos = 0;
+        int n = 0;
+        for (TrackObservation obs : track.getObservations()) {
+            double rad = Math.toRadians(obs.getBearingDeg());
+            sin += Math.sin(rad);
+            cos += Math.cos(rad);
+            n++;
+        }
+        if (n <= 0) {
+            return track.getBearingDeg();
+        }
+        return BearingMath.normalize360(Math.toDegrees(Math.atan2(sin, cos)));
+    }
+
+    /**
+     * 将时间相近的检测点合并为 burst，筛出「多方位并发」的轮次。
+ * 不因某一方位点特别多（持续发信源）而否决，避免点名询问机占空比高时漏检。
      */
     private List<MultiBearingBurst> detectMultiBearingBursts(
             List<DetectionPoint> sortedBand,
@@ -130,11 +251,6 @@ public class MultiDevicePollingDetectorService {
         double span = bearingSpanDeg(bearings, duplicateMergeDeg);
         double minSpanDeg = props.getPollingMinBurstBearingSpanDeg();
         if (minSpanDeg > 0 && span < minSpanDeg) {
-            return null;
-        }
-
-        double dominantFraction = BearingMath.largestClusterFraction(bearings, duplicateMergeDeg);
-        if (dominantFraction > props.getPollingMaxDominantClusterFraction()) {
             return null;
         }
 
@@ -453,8 +569,38 @@ public class MultiDevicePollingDetectorService {
 
         List<Double> spans = gridAligned.stream().map(b -> b.getMetrics().getBearingSpanDeg()).sorted().collect(Collectors.toList());
         double medianSpan = spans.get(spans.size() / 2);
+        List<Integer> clusterCounts = new ArrayList<Integer>();
+        for (MultiBearingBurst burst : gridAligned) {
+            clusterCounts.add(Integer.valueOf(burst.getMetrics().getBearingClusterCount()));
+        }
+        int modeN = modalInt(clusterCounts);
+        if (modeN < 2) {
+            return null;
+        }
+        int withinMode = 0;
+        for (Integer c : clusterCounts) {
+            if (Math.abs(c.intValue() - modeN) <= 1) {
+                withinMode++;
+            }
+        }
+        double nStability = withinMode / (double) gridAligned.size();
+        if (nStability < 0.80) {
+            return null;
+        }
+        int stableSlots = countStableBearingSlots(gridAligned, props);
+        int requiredStable = Math.max(modeN, Math.max(2, props.getPollingMinStableBearingSlots()));
+        if (stableSlots < requiredStable) {
+            return null;
+        }
+
         double avgBearings = gridAligned.stream().mapToInt(b -> b.getMetrics().getBearingClusterCount()).average().orElse(0);
-        int typicalBearings = (int) Math.round(avgBearings);
+        int typicalBearings = modeN;
+        double slotCoverage = Math.min(1.0, stableSlots / (double) modeN);
+        double minSlotSep = minPairwiseSlotSeparation(gridAligned);
+        double qp = period.getPeriodicityScore() * slotCoverage * nStability;
+        if (minSlotSep > 0 && minSlotSep < props.getAssociationGateDeg()) {
+            qp = Math.min(1.0, qp + 0.08);
+        }
 
         double burstBonus = Math.min(gridAligned.size() / (double) props.getPollingMinBurstsInWindow(), 2.5);
         double periodBonus = period.getPeriodicityScore() * 2.0;
@@ -479,8 +625,42 @@ public class MultiDevicePollingDetectorService {
                 freqCenter,
                 freqMin,
                 freqMax,
-                gridAligned
+                gridAligned,
+                null,
+                null,
+                qp
         );
+    }
+
+    private static int modalInt(List<Integer> values) {
+        Map<Integer, Integer> freq = new HashMap<Integer, Integer>();
+        int bestVal = 0;
+        int bestCount = 0;
+        for (Integer v : values) {
+            int n = (freq.containsKey(v) ? freq.get(v).intValue() : 0) + 1;
+            freq.put(v, Integer.valueOf(n));
+            if (n > bestCount || (n == bestCount && v.intValue() > bestVal)) {
+                bestCount = n;
+                bestVal = v.intValue();
+            }
+        }
+        return bestVal;
+    }
+
+    private static double minPairwiseSlotSeparation(List<MultiBearingBurst> aligned) {
+        double best = Double.POSITIVE_INFINITY;
+        for (MultiBearingBurst burst : aligned) {
+            List<Double> centers = burst.getMetrics().getClusterCenters();
+            for (int i = 0; i < centers.size(); i++) {
+                for (int j = i + 1; j < centers.size(); j++) {
+                    double gap = Math.abs(BearingMath.shortestDelta(centers.get(i), centers.get(j)));
+                    if (gap < best) {
+                        best = gap;
+                    }
+                }
+            }
+        }
+        return Double.isInfinite(best) ? 0.0 : best;
     }
 
     private PeriodEstimate estimatePeriod(List<MultiBearingBurst> bursts, SceneFinderProperties props) {
@@ -555,6 +735,10 @@ public class MultiDevicePollingDetectorService {
             }
         }
         bursts.sort(Comparator.comparing(MultiBearingBurst::getCenterTime));
+        Double interrogatorBearing = a.getInterrogatorBearingDeg() != null
+                ? a.getInterrogatorBearingDeg() : b.getInterrogatorBearingDeg();
+        Integer interrogatorTrackId = a.getInterrogatorTrackId() != null
+                ? a.getInterrogatorTrackId() : b.getInterrogatorTrackId();
         return new ScoredPollingWindow(
                 start,
                 end,
@@ -568,7 +752,10 @@ public class MultiDevicePollingDetectorService {
                 (a.getFreqCenterMhz() + b.getFreqCenterMhz()) / 2.0,
                 Math.min(a.getFreqMinMhz(), b.getFreqMinMhz()),
                 Math.max(a.getFreqMaxMhz(), b.getFreqMaxMhz()),
-                bursts
+                bursts,
+                interrogatorBearing,
+                interrogatorTrackId,
+                Math.max(a.getHypothesisQuality(), b.getHypothesisQuality())
         );
     }
 
@@ -671,11 +858,25 @@ public class MultiDevicePollingDetectorService {
         private final double freqMinMhz;
         private final double freqMaxMhz;
         private final List<MultiBearingBurst> bursts;
+        private final Double interrogatorBearingDeg;
+        private final Integer interrogatorTrackId;
+        private final double hypothesisQuality;
 
         ScoredPollingWindow(Instant windowStart, Instant windowEnd, double score, int burstCount,
                             double medianBearingSpanDeg, double periodSec, double avgBearingsPerBurst,
                             int typicalBearingsPerBurst, double periodicityScore, double freqCenterMhz,
                             double freqMinMhz, double freqMaxMhz, List<MultiBearingBurst> bursts) {
+            this(windowStart, windowEnd, score, burstCount, medianBearingSpanDeg, periodSec,
+                    avgBearingsPerBurst, typicalBearingsPerBurst, periodicityScore,
+                    freqCenterMhz, freqMinMhz, freqMaxMhz, bursts, null, null, 0.0);
+        }
+
+        ScoredPollingWindow(Instant windowStart, Instant windowEnd, double score, int burstCount,
+                            double medianBearingSpanDeg, double periodSec, double avgBearingsPerBurst,
+                            int typicalBearingsPerBurst, double periodicityScore, double freqCenterMhz,
+                            double freqMinMhz, double freqMaxMhz, List<MultiBearingBurst> bursts,
+                            Double interrogatorBearingDeg, Integer interrogatorTrackId,
+                            double hypothesisQuality) {
             this.windowStart = windowStart;
             this.windowEnd = windowEnd;
             this.score = score;
@@ -689,6 +890,9 @@ public class MultiDevicePollingDetectorService {
             this.freqMinMhz = freqMinMhz;
             this.freqMaxMhz = freqMaxMhz;
             this.bursts = bursts;
+            this.interrogatorBearingDeg = interrogatorBearingDeg;
+            this.interrogatorTrackId = interrogatorTrackId;
+            this.hypothesisQuality = hypothesisQuality;
         }
 
         Instant getWindowStart() {
@@ -741,6 +945,25 @@ public class MultiDevicePollingDetectorService {
 
         List<MultiBearingBurst> getBursts() {
             return bursts;
+        }
+
+        Double getInterrogatorBearingDeg() {
+            return interrogatorBearingDeg;
+        }
+
+        Integer getInterrogatorTrackId() {
+            return interrogatorTrackId;
+        }
+
+        double getHypothesisQuality() {
+            return hypothesisQuality;
+        }
+
+        ScoredPollingWindow withInterrogator(Double bearing, Integer trackId) {
+            return new ScoredPollingWindow(
+                    windowStart, windowEnd, score, burstCount, medianBearingSpanDeg, periodSec,
+                    avgBearingsPerBurst, typicalBearingsPerBurst, periodicityScore,
+                    freqCenterMhz, freqMinMhz, freqMaxMhz, bursts, bearing, trackId, hypothesisQuality);
         }
     }
 }

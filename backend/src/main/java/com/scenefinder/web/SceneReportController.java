@@ -1,10 +1,12 @@
 package com.scenefinder.web;
 
 import com.pdwfx.signal.model.AnalyzeSessionResponse;
+import com.scenefinder.model.CommandNetPassResponse;
 import com.scenefinder.model.SceneAnalysisReport;
 import com.scenefinder.model.SceneReportChunkResponse;
 import com.scenefinder.model.SceneProcessResponse;
 import com.scenefinder.model.SceneOverlapGroup;
+import com.scenefinder.web.CommandNetPassRequest;
 import com.scenefinder.web.SceneOverlapProcessRequest;
 import com.scenefinder.web.SceneProcessRequest;
 import com.scenefinder.service.ScenePipelineService;
@@ -114,6 +116,14 @@ public class SceneReportController {
             throw new IllegalArgumentException("sceneRanks must not be empty");
         }
         return scenePipelineService.processOverlapGroup(request);
+    }
+
+    @PostMapping("/command-net-pass")
+    public CommandNetPassResponse commandNetPass(@RequestBody CommandNetPassRequest request) throws IOException {
+        if (request.getSourceCsvPath() == null || request.getOutputDir() == null) {
+            throw new IllegalArgumentException("sourceCsvPath and outputDir are required");
+        }
+        return scenePipelineService.applyCommandNetSecondPass(request);
     }
 
     @GetMapping("/overlap-groups")

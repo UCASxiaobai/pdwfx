@@ -31,6 +31,18 @@ import java.util.stream.Stream;
 @Service
 public class SceneTrackIdResolver {
 
+    /** 源行 → 全部确认轨 ID（不按场景过滤），用于指挥网占用窗导出附带 track_id。 */
+    public Map<SourceRowRef, Integer> loadAllTrackRows(Path outputDir, Path sourceInput) throws IOException {
+        if (outputDir == null) {
+            return Collections.emptyMap();
+        }
+        Path mapping = outputDir.resolve("track_rows.csv");
+        if (!Files.isRegularFile(mapping)) {
+            return Collections.emptyMap();
+        }
+        return loadTrackIdMapFromCsv(mapping, sourceInput, null);
+    }
+
     public Map<SourceRowRef, Integer> resolve(
             Path sourceCsv,
             Path outputDir,
@@ -46,7 +58,9 @@ public class SceneTrackIdResolver {
             return fromSceneExport;
         }
 
-        if (scene.getSceneType() == SceneType.TRACK_CONTINUOUS && !scene.getTrackIds().isEmpty()) {
+        if ((scene.getSceneType() == SceneType.TRACK_CONTINUOUS
+                || scene.getSceneType() == SceneType.COMMAND_NET)
+                && !scene.getTrackIds().isEmpty()) {
             Map<SourceRowRef, Integer> fromTrackRows =
                     loadFromTrackMapping(outputDir.resolve("track_rows.csv"), scene.getTrackIds(), sourceCsv);
             if (!fromTrackRows.isEmpty()) {

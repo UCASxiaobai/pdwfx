@@ -4,16 +4,27 @@
       <div>
         <h2>流式态势（独立模块）</h2>
         <p class="sub">
-          TCP 收包 → 落盘切批 → 场景筛选/建轨 → 逐场景信号分析 → 标注。
+          TCP 收包 → 落盘切批 → 场景筛选/建轨 → 逐场景信号分析 → 预警机指挥网二次 → 标注。
           <a href="#/">返回主流程</a>
         </p>
       </div>
-      <button type="button" class="refresh" :disabled="loading" @click="reload">
-        {{ loading ? "刷新中…" : "刷新" }}
-      </button>
+      <div class="head-actions">
+        <button
+          type="button"
+          class="restart"
+          :disabled="restarting || loading"
+          @click="restartStream"
+        >
+          {{ restarting ? "重启中…" : "重启接收" }}
+        </button>
+        <button type="button" class="refresh" :disabled="loading || restarting" @click="reload">
+          {{ loading ? "刷新中…" : "刷新" }}
+        </button>
+      </div>
     </header>
 
     <p v-if="error" class="error">{{ error }}</p>
+    <p v-if="restartMsg" class="ok">{{ restartMsg }}</p>
 
     <section class="card">
       <h3>运行状态</h3>
@@ -36,6 +47,9 @@
           · TOP 连续 {{ status.scene?.topKTrackScenes ?? "—" }}
           · TOP 轮询 {{ status.scene?.topKPollingScenes ?? "—" }}
           · 网络详情 {{ status.preloadAll !== false ? "preloadAll" : "摘要" }}
+          · 封批 {{ status.sealMode || "—" }}
+          · 姿态 {{ status.attitudeState || "—" }}
+          <span v-if="status.droppedManeuverRows"> · 高横滚丢点 {{ status.droppedManeuverRows }}</span>
         </div>
       </div>
       <p v-else class="hint">无法连接流式模块（默认 http://localhost:19080）。请先启动 stream 进程。</p>
@@ -138,16 +152,17 @@
       </section>
 
       <section class="card">
-        <h3>本批全局可视化</h3>
-        <ImportDataScatterViz
-          v-if="importScatter || vizLoading"
-          :scatter="importScatter"
-          :loading="vizLoading && !importScatter"
-          :error="importScatterError"
-        />
-        <p v-else class="hint">
-          {{ selected.sceneOutputDir ? "暂无全量散点（需新批次重新分析后生成 importScatter）" : "等待场景筛选完成…" }}
-        </p>
+        <template v-if="selected">
+          <ImportDataScatterViz
+            v-if="importScatter || vizLoading || selected.sceneOutputDir"
+            title="全量数据概览 · 频率筛选标绘"
+            :scatter="importScatter"
+            :loading="vizLoading && !importScatter"
+            :error="importScatterError || (!vizLoading && !importScatter ? scatterHint : '')"
+            embedded
+          />
+          <p v-else class="hint">{{ scatterHint || "等待场景筛选完成…" }}</p>
+        </template>
       </section>
 
       <section class="card">
@@ -168,13 +183,37 @@
       </section>
 
       <section class="card">
-        <h3>目标类型与波道占用</h3>
+        <h3>换频研判轨迹</h3>
+        <p v-if="vizLoading" class="hint">加载换频研判数据…</p>
+        <p v-else-if="vizError && !hoppingViews.length" class="error">{{ vizError }}</p>
+        <SceneFreqHopTrackViz
+          v-else-if="hoppingViews.length"
+          :hopping-track-views="hoppingViews"
+          :import-scatter="importScatter"
+          :report-rows="chartRows"
+          :show-channel-matrix="false"
+        />
+        <p v-else class="hint">
+          {{ selected.sceneOutputDir ? "暂无换频研判数据（需新批次重新分析）" : "等待场景筛选完成…" }}
+        </p>
+      </section>
+
+      <section class="card">
+        <h3>预警机指挥网</h3>
+        <p v-if="commandNetSkipHint" class="hint">{{ commandNetSkipHint }}</p>
+        <SceneAwacsCommandNetViz v-else :command-net-pass="selected.commandNetPass" />
+      </section>
+
+      <section class="card">
+        <h3>目标类型与目标-波道表</h3>
         <div v-if="occupancySummary.length" class="grid occ-grid">
           <div v-for="item in occupancySummary" :key="item.key">{{ item.text }}</div>
         </div>
         <SceneResultsCharts
-          v-if="chartRows.length"
+          v-if="chartRows.length || hoppingViews.length"
           :rows="chartRows"
+          :hopping-track-views="hoppingViews"
+          :scene-grouped="false"
         />
         <p v-else class="hint">该批尚无目标类型/波道研判结果（需 preloadAll 后重新分析）</p>
       </section>
@@ -228,6 +267,8 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import SceneBearingViz from "./SceneBearingViz.vue";
+import SceneFreqHopTrackViz from "./SceneFreqHopTrackViz.vue";
+import SceneAwacsCommandNetViz from "./SceneAwacsCommandNetViz.vue";
 import ImportDataScatterViz from "./ImportDataScatterViz.vue";
 import SceneResultsCharts from "./SceneResultsCharts.vue";
 import { fetchVisualizationData } from "../scene/sceneApi.js";
@@ -239,11 +280,14 @@ import {
   sceneTypeLabel,
   targetTypeLabel
 } from "../scene/sceneFilters.js";
+import { formatHopTrackFreqLabel } from "../scene/hopChannelMatrix.js";
 
 const STREAM_BASE = (typeof window !== "undefined" && window.__STREAM_API_BASE__) || "http://localhost:19080";
 
 const loading = ref(false);
+const restarting = ref(false);
 const error = ref("");
+const restartMsg = ref("");
 const status = ref(null);
 const batches = ref([]);
 const selected = ref(null);
@@ -256,7 +300,9 @@ let vizAbort = null;
 let timer = null;
 
 const sceneTabs = computed(() =>
-  buildDisplaySceneTabs(selected.value?.scenes || [])
+  buildDisplaySceneTabs(
+    (selected.value?.scenes || []).filter((s) => s.sceneType !== "COMMAND_NET")
+  )
 );
 
 const alignedViews = computed(() =>
@@ -271,6 +317,113 @@ const alignedViews = computed(() =>
 
 const importScatter = computed(() => visualizationPayload.value?.importScatter || null);
 const importScatterError = computed(() => (vizError.value && !importScatter.value ? vizError.value : ""));
+const scatterHint = computed(() => {
+  if (!selected.value) return "";
+  if (vizLoading.value) return "";
+  if (importScatter.value) return "";
+  if (vizError.value) return vizError.value;
+  if (selected.value.sceneOutputDir) {
+    return "暂无全量散点（需新批次重新分析后生成 importScatter）";
+  }
+  return "等待场景筛选完成…";
+});
+const hoppingViews = computed(() =>
+  applyStreamTargetTypeLabelsToViews(
+    visualizationPayload.value?.hoppingTrackViews || [],
+    selected.value?.labels || []
+  )
+);
+
+// #region agent log
+watch(
+  [() => selected.value?.streamBatchId, hoppingViews, () => selected.value?.scenes, () => selected.value?.labels, () => selected.value?.reportRows],
+  () => {
+    const batchId = selected.value?.streamBatchId || "";
+    if (!batchId || !String(batchId).includes("1787121803459")) return;
+    const scenes = (selected.value?.scenes || []).map((s) => ({
+      rank: s.rank,
+      freq: s.freqCenterMhz,
+      type: s.sceneType
+    }));
+    const sceneFreqs = scenes.map((s) => Number(s.freq)).filter((n) => Number.isFinite(n));
+    const near460 = sceneFreqs.filter((f) => Math.abs(f - 460.625) < 0.5);
+    const hasExact460 = sceneFreqs.some((f) => Math.abs(f - 460.625) <= 0.01);
+    const has246 = sceneFreqs.some((f) => Math.abs(f - 246.075) <= 0.01);
+    const tracks = [];
+    for (const v of hoppingViews.value || []) {
+      for (const t of v.tracks || []) {
+        const freqs = [];
+        for (const p of t.points || []) {
+          const f = Number(p.freqMhz);
+          if (Number.isFinite(f) && freqs.indexOf(f) < 0) freqs.push(f);
+        }
+        const hops = (t.hops || []).map((h) => ({
+          from: h.fromFreqMhz,
+          to: h.toFreqMhz,
+          fromTrackId: h.fromTrackId,
+          toTrackId: h.toTrackId
+        }));
+        const hit460 = freqs.some((f) => Math.abs(f - 460.625) <= 0.01);
+        const hit246 = freqs.some((f) => Math.abs(f - 246.075) <= 0.01);
+        if (hit460 || hit246 || /目标3/.test(String(t.label || ""))) {
+          tracks.push({
+            label: t.label,
+            targetType: t.targetType,
+            targetTypeLabel: t.targetTypeLabel,
+            seedFreq: t.seedFreqMhz,
+            linkedTrackIds: t.linkedTrackIds,
+            freqs,
+            hops,
+            hasFreqHop: t.hasFreqHop
+          });
+        }
+      }
+    }
+    const labels = (selected.value?.labels || [])
+      .filter((l) => Math.abs(Number(l.freqMhz) - 246.075) <= 0.01 || Math.abs(Number(l.freqMhz) - 460.625) <= 0.01 || /AWACS|预警/.test(String(l.targetTypeLabel || l.targetType || "")))
+      .map((l) => ({
+        targetId: l.targetId,
+        type: l.targetType,
+        typeLabel: l.targetTypeLabel,
+        freq: l.freqMhz,
+        sceneRank: l.sceneRank
+      }));
+    const reportFreqs = (selected.value?.reportRows || []).map((r) => r.networkFreqMhz);
+    fetch("http://127.0.0.1:7901/ingest/e16fb981-fe8c-4a2f-8b90-e593d79414a3", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "0cb39e" },
+      body: JSON.stringify({
+        sessionId: "0cb39e",
+        runId: "post-fix",
+        hypothesisId: "A,D-fix",
+        location: "StreamSituationView.vue:hop-vs-scene",
+        message: "batch hop freqs vs scene/analysis freqs",
+        data: {
+          batchId,
+          sceneCount: scenes.length,
+          hasExactScene460: hasExact460,
+          hasScene246: has246,
+          scenesNear460: near460,
+          sceneFreqSample: sceneFreqs.slice(0, 30),
+          hopTracksOfInterest: tracks,
+          hopLabelsAfterFix: (tracks || []).map((t) =>
+            formatHopTrackFreqLabel(
+              t.label || "目标",
+              { points: (t.freqs || []).map((f) => ({ freqMhz: f })) },
+              selected.value?.reportRows || selected.value?.labels || []
+            )
+          ),
+          analysisLabelsNear: labels,
+          reportHas460: reportFreqs.some((f) => Math.abs(Number(f) - 460.625) <= 0.01),
+          reportHas246: reportFreqs.some((f) => Math.abs(Number(f) - 246.075) <= 0.01)
+        },
+        timestamp: Date.now()
+      })
+    }).catch(() => {});
+  },
+  { deep: true }
+);
+// #endregion
 
 const chartRows = computed(() => {
   const rows = selected.value?.reportRows;
@@ -295,6 +448,25 @@ const chartRows = computed(() => {
       targetChannelsUsed: l.targetChannelsUsed || l.channelLabel || l.channel,
       detectCount: l.detectCount
     }));
+});
+
+const commandNetSkipHint = computed(() => {
+  const pass = selected.value?.commandNetPass;
+  const status = selected.value?.status;
+  if (!pass || (typeof pass === "object" && !Object.keys(pass).length)) {
+    if (status === "COMMAND_NET") return "指挥网二次分析中…";
+    if (status === "PROCESS_SCENE" || status === "SCENE_FILTER") {
+      return "等待一次分析完成后自动进行指挥网二次…";
+    }
+    return "该批尚无指挥网二次结果（需新批次重新分析）";
+  }
+  if (pass.skipped) {
+    return `指挥网二次跳过：${pass.skipReason || "未知原因"}`;
+  }
+  if (!((pass.awacsPanels || []).length)) {
+    return "指挥网二次已完成，但没有可展示的预警机占用窗";
+  }
+  return "";
 });
 
 const occupancySummary = computed(() => {
@@ -344,18 +516,96 @@ async function selectBatch(b) {
   await loadVisualization(b);
 }
 
+async function restartStream() {
+  const ok = window.confirm(
+    "将清除最近批结果与运行计数，丢弃未分析队列和当前开批，然后继续接收新数据。是否继续？"
+  );
+  if (!ok) return;
+  restarting.value = true;
+  restartMsg.value = "";
+  error.value = "";
+  try {
+    const res = await fetch(`${STREAM_BASE}/api/stream/restart`, { method: "POST" });
+    const text = await res.text();
+    let body = null;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      body = null;
+    }
+    if (!res.ok) {
+      throw new Error((body && body.error) || text || `HTTP ${res.status}`);
+    }
+    selected.value = null;
+    batches.value = [];
+    visualizationPayload.value = null;
+    vizError.value = "";
+    const q = body?.discardedQueueCount ?? 0;
+    const open = body?.discardedOpen ? ` · 丢弃开批 ${body.discardedOpen}` : "";
+    restartMsg.value =
+      (body?.message || "已重启") +
+      (q ? ` · 丢弃队列 ${q} 个` : "") +
+      open;
+    await reload();
+  } catch (e) {
+    error.value = `重启失败：${e?.message || e}`;
+  } finally {
+    restarting.value = false;
+  }
+}
+
+function batchDisplayFingerprint(b) {
+  if (!b) return "";
+  const scenes = b.scenes || [];
+  const labels = b.labels || [];
+  return [
+    b.streamBatchId,
+    b.sceneOutputDir || "",
+    b.completedAt || b.finishedAt || "",
+    scenes.length,
+    scenes.map((s) => `${s.rank}:${s.sceneType || ""}`).join(","),
+    labels.length,
+    b.reportRows?.length || 0,
+    b.totalDetections || 0,
+    b.confirmedTracks || 0,
+    b.commandNetPass?.skipped ? "1" : "0",
+    (b.commandNetPass?.awacsPanels || []).length,
+    b.commandNetPass?.skipReason || ""
+  ].join("|");
+}
+
 async function loadVisualization(batch) {
   vizAbort?.abort();
-  visualizationPayload.value = null;
   vizError.value = "";
   const outputDir = batch?.sceneOutputDir;
+  const batchId = batch?.streamBatchId;
   if (!outputDir || !batch?.scenes?.length) {
+    visualizationPayload.value = null;
     return;
   }
   vizLoading.value = true;
   vizAbort = new AbortController();
   try {
-    visualizationPayload.value = await fetchVisualizationData(outputDir, vizAbort.signal);
+    let payload = null;
+    // 优先从 stream 本机读 visualization-data.json（含频率筛选所需 importScatter）
+    if (batchId) {
+      try {
+        const res = await fetch(
+          `${STREAM_BASE}/api/stream/batches/${encodeURIComponent(batchId)}/visualization-data`,
+          { signal: vizAbort.signal }
+        );
+        if (res.ok) {
+          payload = await res.json();
+        }
+      } catch (e) {
+        if (e?.name === "AbortError") throw e;
+      }
+    }
+    if (!payload) {
+      payload = await fetchVisualizationData(outputDir, vizAbort.signal);
+    }
+    if (payload) payload._dir = outputDir;
+    visualizationPayload.value = payload;
   } catch (e) {
     if (e?.name === "AbortError") return;
     visualizationPayload.value = null;
@@ -380,13 +630,17 @@ async function reload() {
     if (selected.value) {
       const next =
         batches.value.find((x) => x.streamBatchId === selected.value.streamBatchId) || selected.value;
-      selected.value = next;
+      const prevFp = batchDisplayFingerprint(selected.value);
+      const nextFp = batchDisplayFingerprint(next);
+      const selectedUnchanged = prevFp === nextFp;
       const dirChanged = next.sceneOutputDir && next.sceneOutputDir !== visualizationPayload.value?._dir;
-      if (dirChanged || (next.scenes?.length && !visualizationPayload.value)) {
+      const needViz = Boolean(dirChanged || (next.scenes?.length && !visualizationPayload.value));
+      if (!selectedUnchanged) {
+        selected.value = next;
+      }
+      // 内容未变时不换 selected，避免 hoppingViews 新引用触发图表重置；仍补拉缺失 viz
+      if (needViz) {
         await loadVisualization(next);
-        if (visualizationPayload.value) {
-          visualizationPayload.value._dir = next.sceneOutputDir;
-        }
       }
     }
   } catch (e) {
@@ -451,9 +705,18 @@ onUnmounted(() => {
 <style scoped>
 .stream-page { font-family: Arial, sans-serif; padding: 16px; max-width: 1280px; }
 .head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.head-actions { display: flex; gap: 8px; flex-shrink: 0; }
 .sub { color: #6b7280; font-size: 13px; margin: 4px 0 0; }
 .sub a { margin-left: 8px; }
-.refresh { padding: 6px 12px; }
+.refresh, .restart { padding: 6px 12px; cursor: pointer; }
+.restart {
+  background: #fff7ed;
+  border: 1px solid #fdba74;
+  color: #c2410c;
+  border-radius: 4px;
+}
+.restart:disabled, .refresh:disabled { opacity: 0.6; cursor: not-allowed; }
+.refresh { border: 1px solid #d1d5db; border-radius: 4px; background: #fff; }
 .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px 14px; margin-top: 14px; }
 .card h3 { margin: 0 0 10px; font-size: 15px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px 16px; font-size: 13px; }
@@ -464,5 +727,6 @@ onUnmounted(() => {
 .tbl tr.on { background: #eff6ff; }
 .hint { color: #6b7280; font-size: 13px; }
 .error { color: #b91c1c; font-size: 13px; }
+.ok { color: #047857; font-size: 13px; }
 .occ-grid { margin-bottom: 10px; }
 </style>

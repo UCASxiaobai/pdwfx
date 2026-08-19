@@ -29,6 +29,16 @@ public class QualityScene {
     private final double avgBearingsPerBurst;
     private final double periodicityScore;
     private final String annotation;
+    /** 点名组询问机轨迹 ID；对称轮询无持续发信源时为 null */
+    private final Integer interrogatorTrackId;
+    /** 点名组询问机方位（度）；检测阶段提示，建轨后可仍保留 */
+    private final Double interrogatorBearingDeg;
+    /** 点名应答机 lane 数（不含询问机） */
+    private final int responderLaneCount;
+    /** 该点名组目标数（询问机 0/1 + 应答机），尚非 D 波道号 */
+    private final int channelTargetCount;
+    /** 轮询假设归一化质量 Qp（0–1）；连续场景为 0 */
+    private final double hypothesisQuality;
 
     public QualityScene(
             int rank,
@@ -49,6 +59,68 @@ public class QualityScene {
             double avgBearingsPerBurst,
             double periodicityScore,
             String annotation
+    ) {
+        this(rank, sceneType, windowStart, windowEnd, freqCenterMhz, freqMinMhz, freqMaxMhz,
+                distinctDeviceCount, score, trackCount, medianSeparationDeg, averageSmoothness,
+                trackIds, pollingPeriodSec, periodicBurstCount, avgBearingsPerBurst, periodicityScore,
+                annotation, null, null, 0, 0, 0.0);
+    }
+
+    public QualityScene(
+            int rank,
+            SceneType sceneType,
+            Instant windowStart,
+            Instant windowEnd,
+            double freqCenterMhz,
+            double freqMinMhz,
+            double freqMaxMhz,
+            int distinctDeviceCount,
+            double score,
+            int trackCount,
+            double medianSeparationDeg,
+            double averageSmoothness,
+            List<Integer> trackIds,
+            double pollingPeriodSec,
+            int periodicBurstCount,
+            double avgBearingsPerBurst,
+            double periodicityScore,
+            String annotation,
+            Integer interrogatorTrackId,
+            Double interrogatorBearingDeg,
+            int responderLaneCount,
+            int channelTargetCount
+    ) {
+        this(rank, sceneType, windowStart, windowEnd, freqCenterMhz, freqMinMhz, freqMaxMhz,
+                distinctDeviceCount, score, trackCount, medianSeparationDeg, averageSmoothness,
+                trackIds, pollingPeriodSec, periodicBurstCount, avgBearingsPerBurst, periodicityScore,
+                annotation, interrogatorTrackId, interrogatorBearingDeg, responderLaneCount,
+                channelTargetCount, 0.0);
+    }
+
+    public QualityScene(
+            int rank,
+            SceneType sceneType,
+            Instant windowStart,
+            Instant windowEnd,
+            double freqCenterMhz,
+            double freqMinMhz,
+            double freqMaxMhz,
+            int distinctDeviceCount,
+            double score,
+            int trackCount,
+            double medianSeparationDeg,
+            double averageSmoothness,
+            List<Integer> trackIds,
+            double pollingPeriodSec,
+            int periodicBurstCount,
+            double avgBearingsPerBurst,
+            double periodicityScore,
+            String annotation,
+            Integer interrogatorTrackId,
+            Double interrogatorBearingDeg,
+            int responderLaneCount,
+            int channelTargetCount,
+            double hypothesisQuality
     ) {
         this.rank = rank;
         this.sceneType = sceneType;
@@ -72,6 +144,11 @@ public class QualityScene {
         this.avgBearingsPerBurst = avgBearingsPerBurst;
         this.periodicityScore = periodicityScore;
         this.annotation = annotation;
+        this.interrogatorTrackId = interrogatorTrackId;
+        this.interrogatorBearingDeg = interrogatorBearingDeg;
+        this.responderLaneCount = responderLaneCount;
+        this.channelTargetCount = channelTargetCount;
+        this.hypothesisQuality = hypothesisQuality;
     }
 
     public static QualityScene trackScene(
@@ -226,34 +303,27 @@ public class QualityScene {
         return annotation;
     }
 
-    /** 复制本场景并替换时间窗（全段窗模式下对齐整批检测起止）。 */
-    public QualityScene withWindow(Instant newStart, Instant newEnd) {
-        Instant start = newStart != null ? newStart : windowStart;
-        Instant end = newEnd != null ? newEnd : windowEnd;
-        return new QualityScene(
-                rank,
-                sceneType,
-                start,
-                end,
-                freqCenterMhz,
-                freqMinMhz,
-                freqMaxMhz,
-                distinctDeviceCount,
-                score,
-                trackCount,
-                medianSeparationDeg,
-                averageSmoothness,
-                trackIds,
-                pollingPeriodSec,
-                periodicBurstCount,
-                avgBearingsPerBurst,
-                periodicityScore,
-                annotation
-        );
+    public Integer getInterrogatorTrackId() {
+        return interrogatorTrackId;
     }
 
-    /** 复制本场景并替换 lane / 轨迹 ID 列表（轮询建轨后写入）。 */
-    public QualityScene withTrackIds(List<Integer> trackIds) {
+    public Double getInterrogatorBearingDeg() {
+        return interrogatorBearingDeg;
+    }
+
+    public int getResponderLaneCount() {
+        return responderLaneCount;
+    }
+
+    public int getChannelTargetCount() {
+        return channelTargetCount;
+    }
+
+    public double getHypothesisQuality() {
+        return hypothesisQuality;
+    }
+
+    public QualityScene withHypothesisQuality(double quality) {
         return new QualityScene(
                 rank,
                 sceneType,
@@ -272,8 +342,32 @@ public class QualityScene {
                 periodicBurstCount,
                 avgBearingsPerBurst,
                 periodicityScore,
-                annotation
+                annotation,
+                interrogatorTrackId,
+                interrogatorBearingDeg,
+                responderLaneCount,
+                channelTargetCount,
+                quality
         );
+    }
+
+    public QualityScene withRank(int newRank) {
+        return copy(newRank, sceneType, windowStart, windowEnd, trackIds, annotation,
+                interrogatorTrackId, interrogatorBearingDeg, responderLaneCount, channelTargetCount);
+    }
+
+    /** 复制本场景并替换时间窗（全段窗模式下对齐整批检测起止）。 */
+    public QualityScene withWindow(Instant newStart, Instant newEnd) {
+        Instant start = newStart != null ? newStart : windowStart;
+        Instant end = newEnd != null ? newEnd : windowEnd;
+        return copy(rank, sceneType, start, end, trackIds, annotation,
+                interrogatorTrackId, interrogatorBearingDeg, responderLaneCount, channelTargetCount);
+    }
+
+    /** 复制本场景并替换 lane / 轨迹 ID 列表（轮询建轨后写入）。 */
+    public QualityScene withTrackIds(List<Integer> trackIds) {
+        return copy(rank, sceneType, windowStart, windowEnd, trackIds, annotation,
+                interrogatorTrackId, interrogatorBearingDeg, responderLaneCount, channelTargetCount);
     }
 
     /** 轮询场景附带 lane 轨迹 ID 与更新后的说明。 */
@@ -290,6 +384,34 @@ public class QualityScene {
                     alignedRounds
             );
         }
+        return copy(
+                rank,
+                sceneType,
+                windowStart,
+                windowEnd,
+                laneTrackIds,
+                note,
+                interrogatorTrackId,
+                interrogatorBearingDeg,
+                responderLaneCount,
+                laneCount > 0 ? laneCount : distinctDeviceCount
+        ).withDeviceCount(laneCount > 0 ? laneCount : distinctDeviceCount);
+    }
+
+    public QualityScene withCallsignMeta(
+            Integer newInterrogatorTrackId,
+            Double newInterrogatorBearingDeg,
+            int newResponderLaneCount,
+            int newChannelTargetCount,
+            String note
+    ) {
+        String text = note != null ? note : annotation;
+        return copy(rank, sceneType, windowStart, windowEnd, trackIds, text,
+                newInterrogatorTrackId, newInterrogatorBearingDeg, newResponderLaneCount, newChannelTargetCount)
+                .withDeviceCount(newChannelTargetCount > 0 ? newChannelTargetCount : distinctDeviceCount);
+    }
+
+    private QualityScene withDeviceCount(int devices) {
         return new QualityScene(
                 rank,
                 sceneType,
@@ -298,17 +420,61 @@ public class QualityScene {
                 freqCenterMhz,
                 freqMinMhz,
                 freqMaxMhz,
-                laneCount > 0 ? laneCount : distinctDeviceCount,
+                devices,
                 score,
                 trackCount,
                 medianSeparationDeg,
                 averageSmoothness,
-                laneTrackIds,
+                trackIds,
                 pollingPeriodSec,
                 periodicBurstCount,
                 avgBearingsPerBurst,
                 periodicityScore,
-                note
+                annotation,
+                interrogatorTrackId,
+                interrogatorBearingDeg,
+                responderLaneCount,
+                channelTargetCount > 0 ? channelTargetCount : devices,
+                hypothesisQuality
+        );
+    }
+
+    private QualityScene copy(
+            int newRank,
+            SceneType newType,
+            Instant start,
+            Instant end,
+            List<Integer> newTrackIds,
+            String note,
+            Integer newInterrogatorTrackId,
+            Double newInterrogatorBearingDeg,
+            int newResponderLaneCount,
+            int newChannelTargetCount
+    ) {
+        return new QualityScene(
+                newRank,
+                newType,
+                start,
+                end,
+                freqCenterMhz,
+                freqMinMhz,
+                freqMaxMhz,
+                distinctDeviceCount,
+                score,
+                trackCount,
+                medianSeparationDeg,
+                averageSmoothness,
+                newTrackIds,
+                pollingPeriodSec,
+                periodicBurstCount,
+                avgBearingsPerBurst,
+                periodicityScore,
+                note,
+                newInterrogatorTrackId,
+                newInterrogatorBearingDeg,
+                newResponderLaneCount,
+                newChannelTargetCount,
+                hypothesisQuality
         );
     }
 }

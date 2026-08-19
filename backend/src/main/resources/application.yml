@@ -1,9 +1,12 @@
 server:
+  # 信号分析 / 场景筛选 HTTP 端口（流式模块默认连此地址）
   port: 18080
   tomcat:
+    # 大文件上传与长时间分析：连接/Keep-Alive 超时（毫秒）
     connection-timeout: 3600000
     keep-alive-timeout: 3600000
 
+# 信号分析会话上限（同时驻留的分析会话数）
 signal-analysis:
   max-sessions: 256
 
@@ -12,60 +15,151 @@ spring:
     name: signal-analysis
   servlet:
     multipart:
+      # 场景 CSV / Excel 上传大小上限
       max-file-size: 512MB
       max-request-size: 512MB
 
-# bearing-scene-finder（方位场景发现）
+# 方位场景发现（建轨 → 连续轨迹评分 → 轮询检测 → 融合输出）
+# 流式分析未传的字段均用此处默认值；页面/API 非空字段会覆盖对应项
 scene-finder:
+  # ---------- 时间分帧与建轨 ----------
+  # 分帧间隔（秒）。同一帧内的点一起做方位聚类与跨帧关联；越小分辨率越高、计算越重
   frame-seconds: 0.5
+  # 单帧内方位聚类间隙（度）。相邻点方位差超过此值视为不同目标；过小拆轨、过大并轨
   bearing-cluster-gap-deg: 4.0
+  # 跨帧关联门控（度，飞机池默认沿用此值）。预测方位与当前簇差超过则不关联
   association-gate-deg: 6.0
+  # 允许连续丢帧数。超过则结束该轨。无检测间隔上限 ≈ 本值 × frame-seconds（默认约 5 秒）
   max-missed-frames: 10
-  min-track-seconds: 30.0
-  min-track-points: 20
+  # 确认轨最短时长（秒）。切段之后每一段从首点到末点须 ≥ 此值，否则当噪声丢掉
+  min-track-seconds: 20.0
+  # 确认轨最少关联帧数（命中次数，不是原始点数）。须与最短时长同时满足
+  min-track-points: 10
+  # 跨帧关联允许的最大方位变化率（度/秒）。超过视为不同目标，避免噪声串成陡降轨
   max-track-bearing-rate-deg-per-sec: 12.0
+  # 建轨后切段：相邻点方位变化率超过此值（度/秒）则断开
   track-jump-split-deg-per-sec: 14.0
-  track-jump-split-gap-sec: 4.0
-  window-seconds: 120.0
-  window-step-seconds: 30.0
-  min-tracks-in-scene: 1
-  top-k-track-scenes: 50
-  top-k-polling-scenes: 50
-  top-k-scenes: 50
-  min-separation-deg: 3.0
-  freq-min: 200
-  freq-max: 1000
-  freq-cluster-gap-mhz: 0.01
-  scene-freq-band-gap-mhz: 0.01
-  merge-max-gap-seconds: 30
-  polling-burst-coalesce-sec: 0.5
-  polling-burst-bearing-gap-deg: 0.5
-  polling-min-bearings-per-burst: 2
-  polling-min-inter-cluster-separation-deg: 1.0
-  polling-min-aligned-multi-bursts: 5
-  polling-min-stable-bearing-slots: 2
-  polling-max-slot-bearing-std-deg: 1.5
-  polling-min-burst-bearing-span-deg: 0
-  polling-max-dominant-cluster-fraction: 0.72
-  polling-window-seconds: 90.0
-  polling-window-step-seconds: 20.0
-  polling-min-bursts-in-window: 5
-  polling-period-min-sec: 5.0
-  polling-period-max-sec: 20.0
-  polling-period-tolerance-ratio: 0.18
-  polling-min-periodicity-score: 0.55
-  polling-min-slot-round-coverage-ratio: 0.8
-  scene-fusion-overlap-suppress-ratio: 0.92
-  max-visualization-scatter-points: 6000
-  inline-visualization-max-detections: 200000
-  enable-import-scatter: false
-  output-dir: ./output
+  # 建轨后切段间隙（秒）。相邻观测时间差 > 此值则断开成两段，再分别用最短时长过滤
+  track-jump-split-gap-sec: 5.0
 
-# 场景转发信号分析：合并后默认进程内调用，无需单独 18080 服务
+  # ---------- 场景评分（连续轨迹） ----------
+  # 滑动窗长度（秒）。full-span-window=true（流式默认）时不使用，只评本批全时段一次
+  window-seconds: 120.0
+  # 滑动窗步进（秒）。越小候选越多、越慢；典型为 window-seconds 的 1/4
+  window-step-seconds: 30.0
+  # 单个场景内至少需要的确认轨条数；少于此值该窗不输出
+  min-tracks-in-scene: 1
+  # 连续轨迹场景输出条数上限（与轮询分项配额，避免高分轮询占满）
+  top-k-track-scenes: 50
+  # 多设备轮询场景输出条数上限
+  top-k-polling-scenes: 50
+  # 兼容旧配置：仅传 top-k-scenes 且未传分项时，同时作为轨迹与轮询的 Top-K
+  top-k-scenes: 50
+  # 场景中位方位分离度软阈值（度）。低于此值小幅扣分，不是硬过滤
+  min-separation-deg: 3.0
+
+  # ---------- 频段 ----------
+  # CSV 读取频率下限（MHz，列 pl）；0 表示不限制
+  freq-min: 200
+  # CSV 读取频率上限（MHz）
+  freq-max: 1000
+  # 建轨频段间隙（MHz）。点先按此划频段、各段独立建轨；跨帧主频差超过也不匹配。上传时由「频率容差」覆盖
+  freq-cluster-gap-mhz: 0.01
+  # 场景评分同频分组间隙（MHz），通常与 freq-cluster-gap-mhz / 页面频率容差一致
+  scene-freq-band-gap-mhz: 0.01
+  # 合并相邻候选场景允许的最大时间空隙（秒）。同频段、轨迹相似且空隙 ≤ 此值或重叠时可并成更长场景
+  merge-max-gap-seconds: 30
+
+  # ---------- 多设备轮询 / 点名检测 ----------
+  # 合并为同一「轮次」的最大时间跨度（秒），略大于典型帧间隔
+  polling-burst-coalesce-sec: 0.35
+  # 一轮内合并「同一设备重复测向」的方位间隙（度）；大于则计为不同并发设备
+  polling-burst-bearing-gap-deg: 0.5
+  # 一轮 burst 内至少需要的并发设备数（可区分方位簇数）
+  polling-min-bearings-per-burst: 2
+  # 一轮内各并发方位簇心最小间隔（度），排除单目标噪声被拆成多簇
+  polling-min-inter-cluster-separation-deg: 1.0
+  # 窗内按周期对齐、且每轮含足够点位的轮次下限；不满足则不判为轮询
+  polling-min-aligned-multi-bursts: 5
+  # 周期轮次中至少需要的稳定方位槽位数
+  polling-min-stable-bearing-slots: 2
+  # 稳定方位槽在单槽内的方位标准差上限（度）
+  polling-max-slot-bearing-std-deg: 1.5
+  # 一轮内方位跨度下限（度）。0=不启用
+  polling-min-burst-bearing-span-deg: 0
+  # 单方位簇最多占一轮检测点的比例；超过可视为持续发信主导源（询问机），其余点再检 burst
+  polling-max-dominant-cluster-fraction: 0.72
+  # 轮询评分滑动窗长度（秒）；流式全段窗开启时不使用
+  polling-window-seconds: 90.0
+  # 轮询滑动步进（秒）
+  polling-window-step-seconds: 20.0
+  # 窗内至少需要的有效轮询轮次数
+  polling-min-bursts-in-window: 5
+  # 估计轮询周期下限（秒）
+  polling-period-min-sec: 1.2
+  # 估计轮询周期上限（秒）
+  polling-period-max-sec: 12.0
+  # 周期间隔相对中位数的容差比例（0.18 = ±18%）
+  polling-period-tolerance-ratio: 0.18
+  # 周期一致性最低得分（0~1），低于则丢弃该候选窗
+  polling-min-periodicity-score: 0.55
+  # 单个方位槽位在场景轮次中至少出现的比例（0~1）
+  polling-min-slot-round-coverage-ratio: 0.8
+  # 融合去重：同类型两窗时间重叠占较短窗比例超过该值，且内容相似，才丢弃低分者。勿过低，否则滑动窗会被链式删光
+  scene-fusion-overlap-suppress-ratio: 0.92
+
+  # ---------- 可视化与换频 ----------
+  # 每个场景散点图最多绘制的检测点数（超出等间隔抽样）
+  max-visualization-scatter-points: 6000
+  # analyze 响应内联 visualization JSON 的检测点上限；超出则只写文件由前端按需拉取
+  inline-visualization-max-detections: 200000
+  # 是否构建全量频段散点（importScatter）。流式会单独打开；关闭可加快上传预筛
+  enable-import-scatter: false
+  # TOP-K 场景后是否做换频衔接可视化（全批一张图，不按场景拆分）
+  enable-freq-hop-analysis: true
+  # 换频链最短命中点数；低于此且时长也不足时当噪声隐藏
+  hop-min-points: 8
+  # 换频链最短持续时长（秒）
+  hop-min-seconds: 5.0
+  # 判定频率跳变的最小频差（MHz）。≤0 时回退为 freq-cluster-gap-mhz
+  hop-min-delta-mhz: 0.0
+  # 换频/同频续接允许的最大时间间隙（秒），盖住全批同步空桩
+  hop-link-max-gap-sec: 25.0
+  # 长间隙（>8s）衔接方位门控（度），与 association-gate-deg 取较小值
+  hop-link-long-gap-gate-deg: 3.0
+
+  # ---------- 占空比优先建轨 ----------
+  # 同频内先按粗方位估占空比，地面站→预警机→飞机依次紧门控占点，低优先级不抢已占用点
+  duty-priority-enabled: true
+  # 粗分方位间隙（度）
+  duty-coarse-bearing-gap-deg: 4.0
+  # 占空比 ≥ 该百分比 → 地面站优先池
+  duty-ground-min-pct: 25.0
+  # 占空比 ≥ 该百分比且低于地面站 → 预警机优先池；再低为飞机
+  duty-awacs-min-pct: 4.0
+  # 地面站池关联门控（度），比 association-gate-deg 更紧
+  duty-ground-association-gate-deg: 1.5
+  # 预警机池关联门控（度）
+  duty-awacs-association-gate-deg: 3.0
+  # 飞机池关联门控（度）
+  duty-air-association-gate-deg: 6.0
+  # 场景产物目录（CSV / visualization-data.json 等）
+  output-dir: ./output
+  # 一次分析标出预警机后，按占用窗从全批筛点再跑一轮指挥网（只扩一轮）
+  command-net-second-pass: true
+  # 占用窗两端余量（秒）
+  command-net-pad-sec: 3.0
+
+# 场景转发信号分析：合并部署默认进程内调用，无需再起一份 18080
 pdwfx:
   backend:
+    # true=本进程直接调信号分析；false=走下面 HTTP
     in-process: true
+    # 远程模式时的信号分析根地址
     base-url: http://localhost:18080
+    # POST /api/signals/analyze 的频率容差默认值（MHz）
     default-freq-tolerance: 0.01
+    # HTTP 连接超时（秒）
     connect-timeout-seconds: 30
+    # HTTP 读取超时（秒）；大文件分析可能较久
     read-timeout-seconds: 600

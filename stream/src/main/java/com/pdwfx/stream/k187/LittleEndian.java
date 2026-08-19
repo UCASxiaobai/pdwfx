@@ -10,6 +10,7 @@ import java.nio.ByteOrder;
  * 若用高版本 JDK 编译却在 JDK8 运行，会 NoSuchMethodError。</p>
  */
 public final class LittleEndian {
+    /** 底层小端缓冲；读写 position 须经 {@link Buffer} 转型以兼容 JDK8 */
     private final ByteBuffer buf;
 
     public LittleEndian(byte[] data) {

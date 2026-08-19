@@ -10,5 +10,6 @@ public enum ImportFormat {
     PDW_TABLE,
     /** 外源目标定位（雷情导入）：detectTime + longitude + latitude */
     EXTERNAL_TARGET_LOCATE,
+    /** 表头无法识别为上述任一已知格式 */
     UNKNOWN
 }

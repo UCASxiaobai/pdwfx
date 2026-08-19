@@ -137,6 +137,7 @@
       :report="report || { rows: [], buildTimeMs: 0 }"
       :scene-result="sceneResult"
       :forward-items="forwardItems"
+      :command-net-pass="commandNetPass"
       :loading="reportLoading"
       :active-row-key="activeRowKey"
       @select-row="onTableSelectRow"
@@ -172,8 +173,8 @@ const params = reactive({
   windowSeconds: 120,
   windowStepSeconds: 30,
   minTracksInScene: 1,
-  topKTrackScenes: 50,
-  topKPollingScenes: 50,
+  topKTrackScenes: 20,
+  topKPollingScenes: 20,
   outputDir: "./output",
   freqTolerance: 0.01,
   preloadAll: true,
@@ -188,6 +189,7 @@ const forwardResult = ref(null);
 const report = ref(null);
 const reportLoading = ref(false);
 const forwardItems = ref([]);
+const commandNetPass = ref(null);
 const selectedRanks = ref([]);
 const activeRowKey = ref("");
 const explorerRef = ref(null);
@@ -279,6 +281,7 @@ async function runSceneScreeningForViz() {
   clearAnalysisViewCache();
   forwardResult.value = null;
   forwardItems.value = [];
+  commandNetPass.value = null;
   report.value = null;
   activeRowKey.value = "";
   importVizLoading.value = true;
@@ -316,6 +319,7 @@ function clearAll() {
   forwardResult.value = null;
   report.value = null;
   forwardItems.value = [];
+  commandNetPass.value = null;
   selectedRanks.value = [];
   activeRowKey.value = "";
   importScatter.value = null;
@@ -382,6 +386,7 @@ async function runForwardAndReport(signal) {
   reportLoading.value = true;
   report.value = { rows: [], buildTimeMs: 0, partial: true };
   forwardItems.value = [];
+  commandNetPass.value = null;
   activeRowKey.value = "";
   await nextTick();
 
@@ -399,6 +404,9 @@ async function runForwardAndReport(signal) {
         onProgress: (cur, total, rank) => {
           statusMsg.value = `优质场景 ${cur}/${total}（#${rank}）分析中…`;
         },
+        onCommandNet: () => {
+          statusMsg.value = "预警机指挥网二次分析中…";
+        },
         onPartialRows: (rows) => {
           report.value = {
             rows: [...rows],
@@ -409,6 +417,7 @@ async function runForwardAndReport(signal) {
       }
     );
     forwardItems.value = sortScenesForDisplay(summary.forwardItems || []);
+    commandNetPass.value = summary.commandNetPass || null;
     forwardResult.value = {
       sourceCsv: sceneResult.value.sourceCsv,
       outputDir: sceneResult.value.outputDir,

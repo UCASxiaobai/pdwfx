@@ -38,6 +38,7 @@ import java.util.stream.Collectors;
  * 数据来自 {@link QualityScene} 与 {@link BearingTrack}；不单独配置参数，
  * 场景个数由分析时的 {@code topKScenes}/{@code topKTrackScenes}+{@code topKPollingScenes} 决定；
  * 每个入选场景均生成轨迹图（不再额外截断）。
+ * 换频研判视图 {@code hoppingTrackViews} 由 {@link FrequencyHopTrackService} 在分析编排中附加，不改写 trajectoryViews。
  * </p>
  */
 @Service
@@ -147,7 +148,8 @@ public class VisualizationService {
 
     private static final String[] FREQ_COLORS = {
             "#D95319", "#0072BD", "#77AC30", "#4DBEEE", "#A2142F", "#7E2F8E",
-            "#EDB120", "#636363", "#00A9CE", "#8C564B", "#9467BD", "#17BECF"
+            "#EDB120", "#636363", "#00A9CE", "#8C564B", "#9467BD", "#17BECF",
+            "#E377C2", "#2CA02C", "#FF7F0E", "#1F77B4"
     };
     /** 全量散点图最多着色的频点数（与 FREQ_COLORS 一致） */
     private static final int MAX_IMPORT_SCATTER_FREQS = FREQ_COLORS.length;
@@ -160,7 +162,9 @@ public class VisualizationService {
             result.put("totalFreqCount", 0);
             result.put("plottedFreqCount", 0);
             result.put("omittedFreqCount", 0);
+            result.put("defaultPlotFreqCount", 0);
             result.put("series", Collections.emptyList());
+            result.put("freqCatalog", Collections.emptyList());
             return result;
         }
         Map<Double, List<DetectionPoint>> byFreq = new LinkedHashMap<>();
@@ -172,13 +176,14 @@ public class VisualizationService {
         ranked.sort((a, b) -> Integer.compare(b.getValue().size(), a.getValue().size()));
 
         int totalFreqCount = ranked.size();
-        int plotCount = Math.min(MAX_IMPORT_SCATTER_FREQS, totalFreqCount);
-        int omittedFreqCount = totalFreqCount - plotCount;
-        int perFreqCap = Math.max(300, maxScatterPoints / Math.max(1, plotCount));
+        // 默认概览着色 Top-N；series 含全部频点供前端按频率筛选标绘
+        int defaultPlotCount = Math.min(MAX_IMPORT_SCATTER_FREQS, totalFreqCount);
+        int perFreqCap = Math.max(80, maxScatterPoints / Math.max(1, totalFreqCount));
 
-        List<Map<String, Object>> series = new ArrayList<>();
+        List<Map<String, Object>> catalog = new ArrayList<>(totalFreqCount);
+        List<Map<String, Object>> series = new ArrayList<>(totalFreqCount);
         int displayed = 0;
-        for (int i = 0; i < plotCount; i++) {
+        for (int i = 0; i < totalFreqCount; i++) {
             Map.Entry<Double, List<DetectionPoint>> entry = ranked.get(i);
             List<DetectionPoint> band = new ArrayList<>(entry.getValue());
             band.sort(Comparator.comparing(DetectionPoint::getTime));
@@ -188,22 +193,34 @@ public class VisualizationService {
                 points.add(java.util.Arrays.asList(pt.get("x"), pt.get("y")));
             }
             displayed += points.size();
+            boolean defaultColor = i < defaultPlotCount;
+            String color = FREQ_COLORS[i % FREQ_COLORS.length];
+
+            Map<String, Object> cat = new LinkedHashMap<>();
+            cat.put("freqMhz", entry.getKey());
+            cat.put("totalPoints", Integer.valueOf(band.size()));
+            cat.put("defaultPlot", Boolean.valueOf(defaultColor));
+            catalog.add(cat);
+
             Map<String, Object> ser = new LinkedHashMap<>();
             ser.put("freqMhz", entry.getKey());
             ser.put("label", String.format(Locale.ROOT, "%.3f MHz", entry.getKey()));
-            ser.put("color", FREQ_COLORS[i % FREQ_COLORS.length]);
+            ser.put("color", color);
             ser.put("points", points);
-            ser.put("totalPoints", band.size());
-            ser.put("displayedPoints", points.size());
+            ser.put("totalPoints", Integer.valueOf(band.size()));
+            ser.put("displayedPoints", Integer.valueOf(points.size()));
+            ser.put("defaultPlot", Boolean.valueOf(defaultColor));
             series.add(ser);
         }
         result.put("totalPoints", allPoints.size());
         result.put("displayedPoints", displayed);
         result.put("totalFreqCount", totalFreqCount);
-        result.put("plottedFreqCount", plotCount);
-        result.put("omittedFreqCount", omittedFreqCount);
-        result.put("freqCount", plotCount);
+        result.put("plottedFreqCount", totalFreqCount);
+        result.put("defaultPlotFreqCount", defaultPlotCount);
+        result.put("omittedFreqCount", 0);
+        result.put("freqCount", totalFreqCount);
         result.put("series", series);
+        result.put("freqCatalog", catalog);
         return result;
     }
 
@@ -274,10 +291,13 @@ public class VisualizationService {
         int windowTotal = inWindow.size();
         List<DetectionPoint> plotPoints = inWindow;
         List<Map<String, Object>> pollingTargets = buildPollingTargetSeries(scene, trackById);
+        Map<String, Object> interrogatorOverlay = buildInterrogatorOverlay(scene, trackById);
         boolean participantsOnly = !pollingTargets.isEmpty();
         if (participantsOnly) {
             plotPoints = collectPollingParticipantPoints(inWindow, scene, trackById);
         }
+        int persistentInWindow = countPersistentPointsInWindow(inWindow, scene, trackById);
+        int windowTotalExPersistent = Math.max(plotPoints.size(), windowTotal - persistentInWindow);
 
         ScatterBuild scatterBuild = buildDownsampledScatter(plotPoints, maxScatterPoints);
         List<Map<String, Object>> scatter = scatterBuild.scatter;
@@ -319,7 +339,7 @@ public class VisualizationService {
         view.put("trackCount", scene.getTrackCount());
         view.put("pollingParticipantsOnly", participantsOnly);
         view.put("pollingTargetCount", participantsOnly ? pollingTargets.size() : scene.getDistinctDeviceCount());
-        view.put("windowPointTotal", windowTotal);
+        view.put("windowPointTotal", windowTotalExPersistent);
         view.put("scatterTotal", plotPoints.size());
         view.put("scatterDownsampled", plotPoints.size() > scatter.size());
         view.put("displayedTracks", scatter.size());
@@ -329,6 +349,7 @@ public class VisualizationService {
         view.put("yMax", Math.ceil((yMax + pad) * 10) / 10.0);
         view.put("scatterPoints", scatter);
         view.put("pollingTargets", pollingTargets);
+        view.put("interrogatorOverlay", interrogatorOverlay);
         view.put("chartAnnotations", chartAnnotations);
         view.put("note", scene.getAnnotation());
         return view;
@@ -381,6 +402,13 @@ public class VisualizationService {
             if (track == null || track.getObservations().isEmpty()) {
                 continue;
             }
+            if ("INTERROGATOR".equals(track.getPollingRole())) {
+                continue;
+            }
+            if ("GROUND".equals(track.getSuggestedPlatformType())
+                    || "AWACS".equals(track.getSuggestedPlatformType())) {
+                continue;
+            }
             List<Map<String, Object>> points = new ArrayList<>();
             for (TrackObservation obs : track.getObservations()) {
                 if (obs.getTime().isBefore(scene.getWindowStart()) || obs.getTime().isAfter(scene.getWindowEnd())) {
@@ -410,6 +438,76 @@ public class VisualizationService {
             targets.add(target);
         }
         return targets;
+    }
+
+    private Map<String, Object> buildInterrogatorOverlay(
+            QualityScene scene,
+            Map<Integer, BearingTrack> trackById
+    ) {
+        if (scene.getInterrogatorTrackId() == null) {
+            return null;
+        }
+        BearingTrack track = trackById.get(scene.getInterrogatorTrackId());
+        if (track == null || track.getObservations().isEmpty()) {
+            return null;
+        }
+        List<Map<String, Object>> points = new ArrayList<Map<String, Object>>();
+        for (TrackObservation obs : track.getObservations()) {
+            if (obs.getTime().isBefore(scene.getWindowStart()) || obs.getTime().isAfter(scene.getWindowEnd())) {
+                continue;
+            }
+            Map<String, Object> pt = new LinkedHashMap<String, Object>();
+            pt.put("x", obs.getTime().toEpochMilli());
+            pt.put("y", round1(BearingMath.normalize360(obs.getBearingDeg())));
+            points.add(pt);
+        }
+        if (points.isEmpty()) {
+            return null;
+        }
+        Map<String, Object> overlay = new LinkedHashMap<String, Object>();
+        overlay.put("trackId", scene.getInterrogatorTrackId());
+        overlay.put("label", "询问机（连续）");
+        overlay.put("color", "#7B2D8E");
+        overlay.put("role", "INTERROGATOR_CONTINUOUS");
+        double sumY = 0;
+        for (Map<String, Object> pt : points) {
+            sumY += ((Number) pt.get("y")).doubleValue();
+        }
+        overlay.put("meanBearing", round1(sumY / points.size()));
+        overlay.put("freqMhz", round3(FrequencyBandUtils.dominantFrequencyMhz(track)));
+        overlay.put("points", points);
+        return overlay;
+    }
+
+    private int countPersistentPointsInWindow(
+            List<DetectionPoint> inWindow,
+            QualityScene scene,
+            Map<Integer, BearingTrack> trackById
+    ) {
+        if (scene.getInterrogatorTrackId() == null || inWindow.isEmpty()) {
+            return 0;
+        }
+        BearingTrack track = trackById.get(scene.getInterrogatorTrackId());
+        java.util.Set<com.scenefinder.model.SourceRowRef> rows = new java.util.HashSet<com.scenefinder.model.SourceRowRef>();
+        if (track != null) {
+            for (TrackObservation obs : track.getObservations()) {
+                rows.add(obs.sourceRow());
+            }
+        }
+        int n = 0;
+        double matchDeg = 2.0;
+        Double bearing = scene.getInterrogatorBearingDeg();
+        for (DetectionPoint p : inWindow) {
+            if (rows.contains(p.sourceRow())) {
+                n++;
+                continue;
+            }
+            if (bearing != null
+                    && Math.abs(BearingMath.shortestDelta(p.getBearingDeg(), bearing.doubleValue())) <= matchDeg) {
+                n++;
+            }
+        }
+        return n;
     }
 
     /**

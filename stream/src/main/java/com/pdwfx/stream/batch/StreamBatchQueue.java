@@ -4,6 +4,8 @@ import com.pdwfx.stream.config.StreamProperties;
 import org.springframework.stereotype.Component;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -47,4 +49,14 @@ public class StreamBatchQueue {
     public int size() { return queue.size(); }
     public boolean isPaused() { return paused.get(); }
     public int getMaxQueueFiles() { return maxQueueFiles; }
+
+    /**
+     * 清空待分析队列并恢复收包。返回被丢弃的文件路径（调用方可移入 discarded）。
+     */
+    public List<Path> clearAndResume() {
+        List<Path> drained = new ArrayList<>();
+        queue.drainTo(drained);
+        paused.set(false);
+        return drained;
+    }
 }

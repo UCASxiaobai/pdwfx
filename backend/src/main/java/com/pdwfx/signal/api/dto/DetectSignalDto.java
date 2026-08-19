@@ -2,28 +2,52 @@ package com.pdwfx.signal.api.dto;
 
 /**
  * 外部接口单条侦获记录（JSON）。每条可带不同 {@link #freq}，一批数据即多频输入。
+ * <p>
+ * 由 {@link com.pdwfx.signal.api.SignalInputMapper} 转为内部 {@link com.pdwfx.signal.model.DetectSignal}。
+ * </p>
  */
 public class DetectSignalDto {
+
+    /** 可选业务 ID；缺省时映射为 ROW-行号 */
     private String id;
-    /** 侦测时间戳 ms；与 detectTime 二选一 */
+
+    /** 侦测时间戳，单位 ms；与 {@link #detectTime} 二选一 */
     private Long detectTimesss;
-    /** ISO 时间，如 2025-07-03T11:25:06.234；表格源字段 zcsj */
+
+    /** ISO 或 {@code yyyy-MM-dd HH:mm:ss[.SSS]} 时间串；表格源字段 zcsj */
     private String detectTime;
+
     /** 频率 MHz，必填 */
     private Double freq;
+
     /** 方位 °，必填 */
     private Double azimuth;
+
     /** 幅度 dB，必填 */
     private Double signalLevel;
+
+    /** 信噪比（可选） */
     private Double snr;
-    /** 驻留 ms；若传 raw 字段 nSignalTime10us 则自动换算 */
+
+    /** 驻留 ms；若未传而提供 {@link #nSignalTime10us} 则自动换算 */
     private Double signalDwellMs;
-    /** nSignalTime 原始值，单位 10µs */
+
+    /** nSignalTime 原始值，单位 10µs（×0.01 → ms） */
     private Long nSignalTime10us;
+
+    /** 目标定位经度 °（可选，误差椭圆） */
     private Double targetLon;
+
+    /** 目标定位纬度 °（可选，误差椭圆） */
     private Double targetLat;
+
+    /** 测站/平台经度 °（可选） */
     private Double longitude;
+
+    /** 测站/平台纬度 °（可选） */
     private Double latitude;
+
+    /** 调制样式（可选） */
     private String modulateStyle;
 
     public String getId() { return id; }

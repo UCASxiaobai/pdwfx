@@ -4,6 +4,7 @@ import com.pdwfx.signal.api.dto.AnalyzeSignalsRequest;
 import com.pdwfx.signal.api.dto.DetectSignalDto;
 import com.pdwfx.signal.model.AnalyzeSessionResponse;
 import com.pdwfx.signal.model.DetectSignal;
+import com.pdwfx.signal.model.DetectionBatchResponse;
 import com.pdwfx.signal.model.ExternalTargetFix;
 import com.pdwfx.signal.model.ExternalTargetImportResponse;
 import com.pdwfx.signal.model.NetworkAnalysisResponse;
@@ -37,6 +38,7 @@ import java.util.List;
  * 【输出】
  *   getNetworkDetail(sessionId, networkId) → NetworkView   // 单网目标/周期/burst/图表
  *   getNetworkResult(sessionId, networkId) → NetworkResultResponse // 单网目标表+文字结论（无图表）
+ *   exportDetections(sessionId, includeUnassigned) → DetectionBatchResponse // 逐条编批（方位/时间/频率/类型/波道）
  *   preloadNetworks(sessionId, networkIds) → AnalyzeSessionResponse // 预构建并回写 targets
  *   preloadAllNetworks(sessionId)           → AnalyzeSessionResponse // 预构建全部网络
  * </pre>
@@ -136,6 +138,14 @@ public class SignalAnalysisFacade {
     /** 单网业务结果：目标表 + analysisSummary，不含图表时序 */
     public NetworkResultResponse getNetworkResult(String analysisId, int networkId) {
         return analysisSessionService.getNetworkResult(analysisId, networkId);
+    }
+
+    /**
+     * 逐条侦测编批导出（同一目标同一 batchId）。
+     * 会按需构建尚未缓存的网络详情。
+     */
+    public DetectionBatchResponse exportDetections(String analysisId, boolean includeUnassigned) {
+        return analysisSessionService.exportDetections(analysisId, includeUnassigned);
     }
 
     /** 预构建指定网络，摘要中回写 targets / analysisSummary */

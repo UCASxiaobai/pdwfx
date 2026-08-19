@@ -43,6 +43,8 @@ public class AnalysisReportRow {
     private int detectCount;
     /** 该目标在报表范围内占用的全部波道（逗号分隔） */
     private String targetChannelsUsed;
+    /** 来自预警机指挥网二次分析 */
+    private boolean commandNet;
 
     public int getSceneRank() {
         return sceneRank;
@@ -314,5 +316,13 @@ public class AnalysisReportRow {
 
     public void setTargetChannelsUsed(String targetChannelsUsed) {
         this.targetChannelsUsed = targetChannelsUsed;
+    }
+
+    public boolean isCommandNet() {
+        return commandNet;
+    }
+
+    public void setCommandNet(boolean commandNet) {
+        this.commandNet = commandNet;
     }
 }

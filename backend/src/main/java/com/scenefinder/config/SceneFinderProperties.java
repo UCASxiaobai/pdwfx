@@ -91,17 +91,17 @@ public class SceneFinderProperties {
     /**
      * 连续轨迹场景输出条数上限（与轮询分项配额，避免统一 Top-K 被高分轮询占满）。
      */
-    private int topKTrackScenes = 50;
+    private int topKTrackScenes = 20;
 
     /**
      * 多设备轮询通信场景输出条数上限。
      */
-    private int topKPollingScenes = 50;
+    private int topKPollingScenes = 20;
 
     /**
      * 兼容旧配置：当 CLI/API 仅传 {@code topKScenes} 且未传分项时，同时作为轨迹与轮询的 Top-K。
      */
-    private int topKScenes = 50;
+    private int topKScenes = 20;
 
     /**
      * 场景中位方位分离度（度）的软阈值。低于该值时得分会小幅扣分（非硬性过滤）。
@@ -144,7 +144,7 @@ public class SceneFinderProperties {
     // ---------- 多设备轮询通信检测 ----------
 
     /** 合并为同一「轮次」的最大时间跨度（秒），略大于典型帧间隔。 */
-    private double pollingBurstCoalesceSec = 0.5;
+    private double pollingBurstCoalesceSec = 0.35;
 
     /**
      * 轮次内合并「同一设备重复测向」的方位间隙（度）。
@@ -195,10 +195,10 @@ public class SceneFinderProperties {
     private int pollingMinBurstsInWindow = 5;
 
     /** 估计轮询周期的下限（秒）。 */
-    private double pollingPeriodMinSec = 5.0;
+    private double pollingPeriodMinSec = 1.2;
 
     /** 估计轮询周期的上限（秒）。 */
-    private double pollingPeriodMaxSec = 20.0;
+    private double pollingPeriodMaxSec = 12.0;
 
     /** 周期间隔相对中位数的容差比例（如 0.15 表示 ±15%）。 */
     private double pollingPeriodToleranceRatio = 0.18;
@@ -238,6 +238,63 @@ public class SceneFinderProperties {
      * 流式封批分析应开启；事后主流程默认关闭。
      */
     private boolean fullSpanWindow = false;
+
+    /**
+     * 一次分析标出预警机后，是否按占用窗从全批筛点再跑一轮指挥网建轨+信号分析。
+     */
+    private boolean commandNetSecondPass = true;
+
+    /** 预警机占用窗两端余量（秒），覆盖点名周期下沿，避免拉进邻时段噪声。 */
+    private double commandNetPadSec = 3.0;
+
+    // ---------- 换频研判（additive，不改同频结论） ----------
+
+    /**
+     * 是否在 TOPK 场景后做换频衔接可视化（首末种子 + 关闭频率门控）。
+     */
+    private boolean enableFreqHopAnalysis = true;
+
+    /**
+     * 换频链最短命中点数；低于此且时长也不足时标为噪声候选。
+     */
+    private int hopMinPoints = 8;
+
+    /**
+     * 换频链最短持续时长（秒）；与 hopMinPoints 任一不足则标噪声候选。
+     */
+    private double hopMinSeconds = 5.0;
+
+    /**
+     * 判定频率跳变的最小频差（MHz）。&le;0 时回退为 freqClusterGapMhz。
+     */
+    private double hopMinDeltaMhz = 0.0;
+
+    /**
+     * 换频/同频续接允许的最大时间间隙（秒）。盖住全批同步空桩（约 20s）。
+     */
+    private double hopLinkMaxGapSec = 25.0;
+
+    /**
+     * 长间隙（&gt; 8s）衔接时的方位门控（度）。与 associationGateDeg 取较小值。
+     */
+    private double hopLinkLongGapGateDeg = 3.0;
+
+    // ---------- 占空比优先建轨 ----------
+
+    /** 同频内先按粗方位桶估占空比，高占空比优先紧门控建轨 */
+    private boolean dutyPriorityEnabled = true;
+    /** 粗分方位间隙（度） */
+    private double dutyCoarseBearingGapDeg = 4.0;
+    /** ≥ 该占空比 % → 地面站优先池 */
+    private double dutyGroundMinPct = 25.0;
+    /** ≥ 该占空比 % 且 &lt; 地面 → 预警机优先池 */
+    private double dutyAwacsMinPct = 4.0;
+    /** 地面站池关联门控（度） */
+    private double dutyGroundAssociationGateDeg = 1.5;
+    /** 预警机池关联门控（度） */
+    private double dutyAwacsAssociationGateDeg = 3.0;
+    /** 飞机池关联门控（度）；默认沿用 associationGateDeg */
+    private double dutyAirAssociationGateDeg = 6.0;
 
     // ---------- 输出 ----------
 
@@ -411,6 +468,19 @@ public class SceneFinderProperties {
         setInlineVisualizationMaxDetections(source.getInlineVisualizationMaxDetections());
         setEnableImportScatter(source.isEnableImportScatter());
         setFullSpanWindow(source.isFullSpanWindow());
+        setCommandNetSecondPass(source.isCommandNetSecondPass());
+        setCommandNetPadSec(source.getCommandNetPadSec());
+        setEnableFreqHopAnalysis(source.isEnableFreqHopAnalysis());
+        setHopMinPoints(source.getHopMinPoints());
+        setHopMinSeconds(source.getHopMinSeconds());
+        setHopMinDeltaMhz(source.getHopMinDeltaMhz());
+        setDutyPriorityEnabled(source.isDutyPriorityEnabled());
+        setDutyCoarseBearingGapDeg(source.getDutyCoarseBearingGapDeg());
+        setDutyGroundMinPct(source.getDutyGroundMinPct());
+        setDutyAwacsMinPct(source.getDutyAwacsMinPct());
+        setDutyGroundAssociationGateDeg(source.getDutyGroundAssociationGateDeg());
+        setDutyAwacsAssociationGateDeg(source.getDutyAwacsAssociationGateDeg());
+        setDutyAirAssociationGateDeg(source.getDutyAirAssociationGateDeg());
         setOutputDir(source.getOutputDir());
     }
 
@@ -644,5 +714,125 @@ public class SceneFinderProperties {
 
     public void setFullSpanWindow(boolean fullSpanWindow) {
         this.fullSpanWindow = fullSpanWindow;
+    }
+
+    public boolean isEnableFreqHopAnalysis() {
+        return enableFreqHopAnalysis;
+    }
+
+    public void setEnableFreqHopAnalysis(boolean enableFreqHopAnalysis) {
+        this.enableFreqHopAnalysis = enableFreqHopAnalysis;
+    }
+
+    public int getHopMinPoints() {
+        return hopMinPoints;
+    }
+
+    public void setHopMinPoints(int hopMinPoints) {
+        this.hopMinPoints = hopMinPoints;
+    }
+
+    public double getHopMinSeconds() {
+        return hopMinSeconds;
+    }
+
+    public void setHopMinSeconds(double hopMinSeconds) {
+        this.hopMinSeconds = hopMinSeconds;
+    }
+
+    public double getHopMinDeltaMhz() {
+        return hopMinDeltaMhz;
+    }
+
+    public void setHopMinDeltaMhz(double hopMinDeltaMhz) {
+        this.hopMinDeltaMhz = hopMinDeltaMhz;
+    }
+
+    public double getHopLinkMaxGapSec() {
+        return hopLinkMaxGapSec;
+    }
+
+    public void setHopLinkMaxGapSec(double hopLinkMaxGapSec) {
+        this.hopLinkMaxGapSec = hopLinkMaxGapSec;
+    }
+
+    public double getHopLinkLongGapGateDeg() {
+        return hopLinkLongGapGateDeg;
+    }
+
+    public void setHopLinkLongGapGateDeg(double hopLinkLongGapGateDeg) {
+        this.hopLinkLongGapGateDeg = hopLinkLongGapGateDeg;
+    }
+
+    public boolean isDutyPriorityEnabled() {
+        return dutyPriorityEnabled;
+    }
+
+    public void setDutyPriorityEnabled(boolean dutyPriorityEnabled) {
+        this.dutyPriorityEnabled = dutyPriorityEnabled;
+    }
+
+    public double getDutyCoarseBearingGapDeg() {
+        return dutyCoarseBearingGapDeg;
+    }
+
+    public void setDutyCoarseBearingGapDeg(double dutyCoarseBearingGapDeg) {
+        this.dutyCoarseBearingGapDeg = dutyCoarseBearingGapDeg;
+    }
+
+    public double getDutyGroundMinPct() {
+        return dutyGroundMinPct;
+    }
+
+    public void setDutyGroundMinPct(double dutyGroundMinPct) {
+        this.dutyGroundMinPct = dutyGroundMinPct;
+    }
+
+    public double getDutyAwacsMinPct() {
+        return dutyAwacsMinPct;
+    }
+
+    public void setDutyAwacsMinPct(double dutyAwacsMinPct) {
+        this.dutyAwacsMinPct = dutyAwacsMinPct;
+    }
+
+    public double getDutyGroundAssociationGateDeg() {
+        return dutyGroundAssociationGateDeg;
+    }
+
+    public void setDutyGroundAssociationGateDeg(double dutyGroundAssociationGateDeg) {
+        this.dutyGroundAssociationGateDeg = dutyGroundAssociationGateDeg;
+    }
+
+    public double getDutyAwacsAssociationGateDeg() {
+        return dutyAwacsAssociationGateDeg;
+    }
+
+    public void setDutyAwacsAssociationGateDeg(double dutyAwacsAssociationGateDeg) {
+        this.dutyAwacsAssociationGateDeg = dutyAwacsAssociationGateDeg;
+    }
+
+    public double getDutyAirAssociationGateDeg() {
+        return dutyAirAssociationGateDeg;
+    }
+
+    public void setDutyAirAssociationGateDeg(double dutyAirAssociationGateDeg) {
+        this.dutyAirAssociationGateDeg = dutyAirAssociationGateDeg;
+    }
+
+    public boolean isCommandNetSecondPass() {
+        return commandNetSecondPass;
+    }
+
+    public void setCommandNetSecondPass(boolean commandNetSecondPass) {
+        this.commandNetSecondPass = commandNetSecondPass;
+    }
+
+    public double getCommandNetPadSec() {
+        return commandNetPadSec;
+    }
+
+    public void setCommandNetPadSec(double commandNetPadSec) {
+        this.commandNetPadSec = commandNetPadSec;
     }
 }

@@ -132,7 +132,7 @@ const chartHint = computed(() => {
   if (!v) return "与下方「信号分析方位轨迹」共用场景 Tab；此处为预筛散点/轨迹。";
   if (v.viewMode === "polling") {
     return v.pollingParticipantsOnly
-      ? "仅显示已识别轮询目标的 burst 点位（按目标分色）。"
+      ? "仅显示飞机轮询目标的 burst 点位（按目标分色）；预警机/地面站连续轨如有则画询问机衬线，不计入轮询目标。"
       : "散点为场景窗内原始检测方位。";
   }
   return "按时间帧聚合目标方位（xhfw）；有信号分析结果时图例显示「目标N-类型」。";
@@ -163,7 +163,7 @@ function renderChart() {
 
 function buildTrackOption(v) {
   const series = (v.tracks || []).map((t) => ({
-    name: `${t.label} (#${t.trackId})`,
+    name: trackLegendName(t),
     type: "line",
     showSymbol: true,
     symbolSize: 6,
@@ -215,7 +215,7 @@ function buildPollingOption(v) {
   const targets = v.pollingTargets?.length ? v.pollingTargets : null;
   const series = targets
     ? targets.map((t) => ({
-        name: `${t.label} (#${t.trackId})`,
+        name: trackLegendName(t),
         type: "scatter",
         symbolSize: 6,
         itemStyle: { color: t.color },
@@ -230,6 +230,16 @@ function buildPollingOption(v) {
           data: (v.scatterPoints || []).map((p) => [p.x, p.y])
         }
       ];
+  if (v.interrogatorOverlay && (v.interrogatorOverlay.points || []).length) {
+    const ov = v.interrogatorOverlay;
+    series.push({
+      name: trackLegendName({ ...ov, label: ov.label || "询问机（连续）" }),
+      type: "scatter",
+      symbolSize: 5,
+      itemStyle: { color: ov.color || "#7B2D8E" },
+      data: ov.points.map((p) => [p.x, p.y])
+    });
+  }
 
   return {
     tooltip: {
@@ -260,6 +270,16 @@ function buildPollingOption(v) {
 
 function formatClock(ms) {
   return new Date(ms).toLocaleTimeString("zh-CN", { hour12: false });
+}
+
+function trackLegendName(t) {
+  const id = t.trackId != null ? ` (#${t.trackId})` : "";
+  const base = t.label || "目标";
+  const type = t.targetTypeLabel;
+  if (type && type !== "—" && !String(base).includes(type)) {
+    return `${base}-${type}${id}`;
+  }
+  return `${base}${id}`;
 }
 
 function onResize() {

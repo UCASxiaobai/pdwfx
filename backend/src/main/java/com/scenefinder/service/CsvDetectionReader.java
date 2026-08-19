@@ -38,6 +38,9 @@ import java.util.stream.Stream;
 @Service
 public class CsvDetectionReader {
 
+    /**
+     * 灵活时间解析：yyyy-MM-dd[T| ]HH:mm:ss[.小数秒]，对应列 zcsj。
+     */
     private static final DateTimeFormatter FLEX_TIME = new DateTimeFormatterBuilder()
             .appendPattern("yyyy-MM-dd['T'][' ']HH:mm:ss")
             .optionalStart()
@@ -107,6 +110,7 @@ public class CsvDetectionReader {
             long row = 1;
             for (CSVRecord record : parser) {
                 row++;
+                // 必需列：pl=频率MHz，xhfw=方位°，zcsj=侦获时刻
                 Double frequency = parseDouble(record, "pl");
                 Double bearing = parseDouble(record, "xhfw");
                 String timeText = record.isMapped("zcsj") ? record.get("zcsj") : null;
@@ -117,18 +121,21 @@ public class CsvDetectionReader {
                 if (frequency < freqMin || frequency > freqMax) {
                     continue;
                 }
+                // 与信号导入一致：nSignalTime 场景有效窗口过滤
                 if (!NSignalTimeColumns.isValidSceneInput(record)) {
                     continue;
                 }
 
                 Instant time = parseTime(timeText.trim());
+                double dwellMs = NSignalTimeColumns.toDwellMs(NSignalTimeColumns.readRaw10us(record));
                 points.add(new DetectionPoint(
                         sourceFile,
                         row,
                         time,
                         bearing,
                         frequency,
-                        record.toString()));
+                        record.toString(),
+                        dwellMs));
             }
         }
         return points;

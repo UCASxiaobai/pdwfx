@@ -3,6 +3,7 @@ package com.pdwfx.signal.controller;
 import com.pdwfx.signal.api.SignalAnalysisFacade;
 import com.pdwfx.signal.api.dto.AnalyzeSignalsRequest;
 import com.pdwfx.signal.model.AnalyzeSessionResponse;
+import com.pdwfx.signal.model.DetectionBatchResponse;
 import com.pdwfx.signal.model.ExternalTargetImportResponse;
 import com.pdwfx.signal.model.NetworkResultResponse;
 import com.pdwfx.signal.model.NetworkView;
@@ -25,6 +26,9 @@ import java.util.List;
  * <ul>
  *   <li>POST /api/signals/analyze — 文件上传，支持行内多频</li>
  *   <li>POST /api/signals/analyze/json — JSON 批量侦获，支持多频混合</li>
+ *   <li>POST /api/signals/analyze/detections — 文件上传，一次返回逐条编批结果</li>
+ *   <li>POST /api/signals/analyze/detections/json — JSON 侦获，一次返回逐条编批结果</li>
+ *   <li>GET  /api/signals/analysis/{id}/detections — 已有 session 的逐条编批结果</li>
  *   <li>GET  /api/signals/analysis/{id}/networks/{networkId} — 单网详情（含图表）</li>
  *   <li>GET  /api/signals/analysis/{id}/networks/{networkId}/result — 单网业务结果（目标表+结论，无图表）</li>
  *   <li>POST /api/signals/analysis/{id}/preload — 预构建指定网络（networkIds=1,2,3）</li>
@@ -70,6 +74,66 @@ public class SignalAnalysisController {
         log.info("JSON 分析完成, 网络数 {}, session={}, 耗时 {} ms",
                 session.getNetworkCount(), session.getAnalysisId(), System.currentTimeMillis() - t0);
         return session;
+    }
+
+    /**
+     * 上传文件并一次返回逐条编批结果（方位、时间、频率、目标类型、占用波道）。
+     * 会预构建全部网络后再展开。
+     */
+    @PostMapping(value = "/analyze/detections", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public DetectionBatchResponse analyzeDetections(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(required = false) MultipartFile referenceFile,
+            @RequestParam(defaultValue = "0.01")
+            @DecimalMin("0.0") double freqTolerance,
+            @RequestParam(defaultValue = "true") boolean includeUnassigned
+    ) throws IOException {
+        log.info("开始逐条编批导出(文件): {}, 频率容差: {}", file.getOriginalFilename(), freqTolerance);
+        long t0 = System.currentTimeMillis();
+        AnalyzeSessionResponse session = facade.analyzeFromFile(file, freqTolerance, referenceFile);
+        facade.preloadAllNetworks(session.getAnalysisId());
+        DetectionBatchResponse response = facade.exportDetections(session.getAnalysisId(), includeUnassigned);
+        if (response == null) {
+            throw new IllegalStateException("分析会话不可用");
+        }
+        response.setElapsedMs(System.currentTimeMillis() - t0);
+        return response;
+    }
+
+    /**
+     * JSON 侦获一次返回逐条编批结果。
+     */
+    @PostMapping(value = "/analyze/detections/json", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public DetectionBatchResponse analyzeDetectionsJson(
+            @Valid @RequestBody AnalyzeSignalsRequest request,
+            @RequestParam(defaultValue = "true") boolean includeUnassigned
+    ) {
+        double tol = request.getFreqTolerance() != null ? request.getFreqTolerance() : 0.01;
+        log.info("开始逐条编批导出(JSON): 条数={}, freqTolerance={}", request.getSignals().size(), tol);
+        long t0 = System.currentTimeMillis();
+        AnalyzeSessionResponse session = facade.analyzeFromJson(request);
+        facade.preloadAllNetworks(session.getAnalysisId());
+        DetectionBatchResponse response = facade.exportDetections(session.getAnalysisId(), includeUnassigned);
+        if (response == null) {
+            throw new IllegalStateException("分析会话不可用");
+        }
+        response.setElapsedMs(System.currentTimeMillis() - t0);
+        return response;
+    }
+
+    /**
+     * 已有分析会话的逐条编批结果（未预构建的网络会在此按需分析）。
+     */
+    @GetMapping("/analysis/{analysisId}/detections")
+    public ResponseEntity<DetectionBatchResponse> getDetections(
+            @PathVariable String analysisId,
+            @RequestParam(defaultValue = "true") boolean includeUnassigned
+    ) {
+        DetectionBatchResponse response = facade.exportDetections(analysisId, includeUnassigned);
+        if (response == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        }
+        return ResponseEntity.ok(response);
     }
 
     @PostMapping("/analysis/{analysisId}/preload")

@@ -60,6 +60,15 @@ class MultiDevicePollingDetectorServiceTest {
         assertTrue(scenes.isEmpty(), "two smooth overlapping tracks are not periodic multi-point polling");
     }
 
+    @Test
+    void emptyPersistentTracksRejectsOtherwiseValidPattern() {
+        SceneFinderProperties props = pollingProps();
+        List<DetectionPoint> points = buildPeriodicPoints(new double[] {100.0, 105.0, 110.0}, 8.0);
+        assertFalse(detector.findPollingScenes(points, props).isEmpty());
+        assertTrue(detector.findPollingScenes(points, new java.util.ArrayList<com.scenefinder.model.BearingTrack>(), props)
+                .isEmpty());
+    }
+
     private static List<DetectionPoint> buildOverlappingContinuousTracks() {
         List<DetectionPoint> points = new ArrayList<>();
         long baseMs = Instant.parse("2025-07-03T10:54:14Z").toEpochMilli();

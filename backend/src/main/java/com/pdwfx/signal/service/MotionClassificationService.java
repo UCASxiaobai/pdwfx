@@ -52,6 +52,8 @@ public class MotionClassificationService {
             r.state = "NO_ELLIPSE";
             r.convergenceState = "NOT_CONVERGING";
             r.ellipseConverging = false;
+            r.bearingStepAvg = azimuthStepAvg(signals);
+            r.bearingDriftRate = bearingLinearDriftRate(signals);
             r.detail = String.format(
                     "误差椭圆：无法形成（有效定位点 %d/%d，需≥%d）；按规则判为飞机",
                     n, total, MIN_COORDS);
@@ -94,6 +96,8 @@ public class MotionClassificationService {
         r.earlySpread = earlySpread;
         r.lateSpread = lateSpread;
         r.ellipseConverging = ellipseConverging;
+        r.bearingStepAvg = azimuthStepAvg(signals);
+        r.bearingDriftRate = bearingLinearDriftRate(signals);
 
         KalmanTrack kf = estimateKinematic(pts, times, invCov);
         r.smoothedSpeed = kf.speedDegPerSec;
@@ -186,6 +190,32 @@ public class MotionClassificationService {
             sum += Math.abs(sorted.get(i).getAzimuth() - sorted.get(i - 1).getAzimuth());
         }
         return sum / (sorted.size() - 1);
+    }
+
+    /** 方位–时间线性拟合斜率绝对值（°/s） */
+    private static double bearingLinearDriftRate(List<DetectSignal> signals) {
+        if (signals == null || signals.size() < 3) {
+            return 0d;
+        }
+        List<DetectSignal> sorted = signals.stream()
+                .sorted(Comparator.comparingLong(DetectSignal::getDetectTimesss))
+                .collect(Collectors.toList());
+        long t0 = sorted.get(0).getDetectTimesss();
+        double sumX = 0, sumY = 0, sumXX = 0, sumXY = 0;
+        int n = sorted.size();
+        for (DetectSignal s : sorted) {
+            double x = (s.getDetectTimesss() - t0) / 1000.0;
+            double y = s.getAzimuth();
+            sumX += x;
+            sumY += y;
+            sumXX += x * x;
+            sumXY += x * y;
+        }
+        double den = n * sumXX - sumX * sumX;
+        if (Math.abs(den) < 1e-9) {
+            return 0d;
+        }
+        return Math.abs((n * sumXY - sumX * sumY) / den);
     }
 
     private static double[][] sub(double[][] pts, int from, int to) {
@@ -313,5 +343,9 @@ public class MotionClassificationService {
         public double headingStability;
         public double innovationInlierRatio;
         public double fallbackAzimuthMove;
+        /** 逐步进方位均差（°） */
+        public double bearingStepAvg;
+        /** 方位–时间线性漂移率绝对值（°/s） */
+        public double bearingDriftRate;
     }
 }

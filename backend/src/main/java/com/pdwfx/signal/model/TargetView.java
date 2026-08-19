@@ -81,6 +81,9 @@ public class TargetView {
     private int detectCount;
     /** 该目标簇内出现的通信频率（MHz），用于异频合批后的分频展示 */
     private List<Double> commFreqMhzList = new ArrayList<>();
+    /** 编批后的原始侦测（不输出到图表 JSON，供逐条编批导出） */
+    @JsonIgnore
+    private List<DetectSignal> clusteredSignals = new ArrayList<>();
 
     public String getTargetId() { return targetId; }
     public void setTargetId(String targetId) { this.targetId = targetId; }
@@ -199,5 +202,9 @@ public class TargetView {
     public List<Double> getCommFreqMhzList() { return commFreqMhzList; }
     public void setCommFreqMhzList(List<Double> commFreqMhzList) {
         this.commFreqMhzList = commFreqMhzList != null ? commFreqMhzList : new ArrayList<>();
+    }
+    public List<DetectSignal> getClusteredSignals() { return clusteredSignals; }
+    public void setClusteredSignals(List<DetectSignal> clusteredSignals) {
+        this.clusteredSignals = clusteredSignals != null ? clusteredSignals : new ArrayList<DetectSignal>();
     }
 }

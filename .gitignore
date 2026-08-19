@@ -16,6 +16,11 @@
 analysis-check.json
 analysis-result.json
 test-response.json
+/stream-batch-*/
+tmp_*.py
+
+# Cursor / local debug
+.cursor/
 
 # Archives
 *.zip

@@ -4,6 +4,9 @@ package com.pdwfx.signal.service;
 
 import com.pdwfx.signal.model.AnalyzeSessionResponse;
 
+import com.pdwfx.signal.model.DetectSignal;
+import com.pdwfx.signal.model.DetectionBatchResponse;
+
 import com.pdwfx.signal.model.ExternalTargetFix;
 import com.pdwfx.signal.model.NetworkResultResponse;
 
@@ -221,6 +224,32 @@ public class AnalysisSessionService {
 
         return toSessionResponse(analysisId, session);
 
+    }
+
+    /**
+     * 逐条导出编批结果：同一目标同一 {@code batchId}，含方位、时间、频率、类型、波道。
+     */
+    public DetectionBatchResponse exportDetections(String analysisId, boolean includeUnassigned) {
+        Session session = sessions.get(analysisId);
+        if (session == null) {
+            return null;
+        }
+        touch(analysisId);
+        long t0 = System.currentTimeMillis();
+        DetectionBatchAssembler assembler = new DetectionBatchAssembler();
+        assembler.setAnalysisId(analysisId);
+        List<Integer> ids = new ArrayList<Integer>(session.bucketById.keySet());
+        ids.sort(Integer::compareTo);
+        for (int i = 0; i < ids.size(); i++) {
+            Integer networkId = ids.get(i);
+            NetworkView view = getNetwork(analysisId, networkId.intValue());
+            SignalAnalysisService.NetworkBucket bucket = session.bucketById.get(networkId);
+            List<DetectSignal> signals = bucket == null
+                    ? Collections.<DetectSignal>emptyList()
+                    : bucket.signals;
+            assembler.addNetwork(view, signals, includeUnassigned);
+        }
+        return assembler.build(System.currentTimeMillis() - t0);
     }
 
     public void storeExternalFixes(String analysisId, List<ExternalTargetFix> fixes, int totalCount) {

@@ -264,7 +264,7 @@ function buildHtmlReport({ sceneResult, report, filteredRows, formattedRows, sta
 
   ${chartBlock(chartImages[1], "波道分布")}
 
-  ${chartBlock(chartImages[2], "各场景网络数量")}
+  <p style="font-size:12px;color:#555;">目标 ↔ 波道关联明细见下方报表（页面中的目标-波道表）。</p>
 
 
 

@@ -1,4 +1,5 @@
 server:
+  # 流式态势 HTTP 端口（前端默认连此；TCP 侦收在 stream.tcp.port）
   port: 19080
 
 spring:
@@ -6,43 +7,68 @@ spring:
     name: pdwfx-stream
   servlet:
     multipart:
+      # 本模块上传大小上限
       max-file-size: 512MB
       max-request-size: 512MB
 
-# 独立流式模块配置（本模块默认启用；原 backend 不受影响）
+# 独立流式模块。建轨/场景门控未在下方列出的项，一律用 backend 的 scene-finder 默认值
 stream:
   tcp:
+    # 是否监听 K187/B108 等侦收 TCP
     enabled: true
+    # 侦收端口
     port: 19090
+    # 监听地址；0.0.0.0 表示所有网卡
     bind: 0.0.0.0
   batch:
-    # 按解析出的数据时间跨越该分钟数后自动封批并触发分析；后续点写入下一批
-    duration-minutes: 2
+    # 封批：ATTITUDE=|roll|≤门限才落盘，高横滚持续确认后封批；DURATION=仅按数据时间跨度（可回退）
+    seal-mode: ATTITUDE
+    # ATTITUDE 模式下仍作超长平飞安全阀（分钟），到时强制封批
+    duration-minutes: 15
+    # 姿态原始值 ÷ 该系数 → 度（与航向÷100 一致）
+    attitude-scale: 100
+    # 横滚绝对值超过该值（度）视为转向候选
+    attitude-roll-turn-deg: 5.0
+    # 高横滚需持续满该秒数才确认转向并考虑封批
+    attitude-roll-hold-seconds: 5.0
+    # 确认转向时，从开批到当前时刻少于此秒数则不分析（含中间被丢弃的高横滚时段）
+    attitude-min-batch-seconds: 60.0
+    # 封批 CSV / 队列目录
     dir: ${user.dir}/stream-data
+    # 每积累多少行刷盘一次
     flush-every-rows: 200
+    # 待分析队列文件数上限
     max-queue-files: 24
     # 落盘前本批内去重（频点+方位+探测时间），减轻后续场景/信号分析
     dedup-enabled: true
   analyze:
-    # 封批后：场景筛选/建轨 → 逐场景信号分析 → 写标注 JSON
+    # 封批后是否自动：场景筛选/建轨 → 逐场景信号分析 → 写标注 JSON
     enabled: true
+    # backend 场景筛选地址（须与 backend server.port 一致）
     base-url: http://localhost:18080
+    # 传给 backend 的频率容差（MHz），覆盖 scene-finder 的频段间隙
     freq-tolerance: 0.01
     # 预构建全部网络详情：目标类型 / 波道占用等与主流程同一套算法
     preload-all: true
+    # 并行分析批次数；1=排队逐批
     workers: 1
     scene:
-      # 流式：每频段对本批实际时间跨度评一次（连续+轮询）；false 时才用下方滑动窗参数
+      # 每频段对本批实际时间跨度评一次（连续+轮询）；false 时才用下方滑动窗
       full-span-window: true
+      # 仅 full-span-window=false 时使用的滑动窗长度（秒）
       window-seconds: 120
+      # 连续轨迹场景输出条数上限（本模块覆盖 backend 的 20）
       top-k-track-scenes: 50
+      # 轮询场景输出条数上限
       top-k-polling-scenes: 50
     annotation:
+      # 标注 JSON 目录；空则用 {batch.dir}/annotations
       dir: ""
   display:
-    # 显示软件推送 URL（空则本期不推，仅落盘 annotations）
+    # 显示软件推送 URL；空则不推，仅落盘 annotations
     push-url: ""
   cors:
+    # 浏览器跨域允许来源
     allowed-origins: "*"
 
 logging:

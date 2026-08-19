@@ -8,12 +8,21 @@ import java.util.List;
  */
 public final class DoaHistChiefZhang {
 
+    /** DOA 直方图最大样本数上限 */
     private static final int MAX_DOA_AMOUNT = 4096;
+    /** 无效方位哨兵（0.1° 刻度），与 cet36 一致 */
     private static final short INVALID_VALUE = 4000;
 
+    /** 主峰融合输出 */
     public static final class Result {
+        /**
+         * 状态码：0 成功；负值失败。
+         * -1 空输入；-2 样本过少；-3 过多；-4 主峰计数不足；-5 无入选点等。
+         */
         public int code;
+        /** 融合方位均值，单位 0.1°（0～3599）；失败时为 {@link #INVALID_VALUE} */
         public short doaMean = INVALID_VALUE;
+        /** 入选样本标准差，单位 0.1°；失败时为 {@link #INVALID_VALUE} */
         public short doaStd = INVALID_VALUE;
     }
 

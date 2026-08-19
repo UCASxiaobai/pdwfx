@@ -26,12 +26,15 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -51,6 +54,10 @@ public class StreamBatchAnalyzer {
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicReference<String> currentFile = new AtomicReference<>("");
     private final AtomicReference<String> currentPhase = new AtomicReference<>("");
+    /** 重启后递增；进行中的分析若世代落后则丢弃结果，避免旧批写回。 */
+    private final AtomicLong restartEpoch = new AtomicLong(0L);
+    /** 单 worker 线程：当前 processOne 捕获的重启世代。 */
+    private final ThreadLocal<Long> processEpoch = new ThreadLocal<>();
     private ExecutorService worker;
 
     public StreamBatchAnalyzer(StreamProperties properties,
@@ -88,6 +95,23 @@ public class StreamBatchAnalyzer {
     public String getCurrentFile() { return currentFile.get(); }
     public String getCurrentPhase() { return currentPhase.get(); }
 
+    public long getRestartEpoch() {
+        return restartEpoch.get();
+    }
+
+    /**
+     * 标记重启：进行中的分析完成后不再写回结果；清空当前相位显示。
+     *
+     * @return 新的世代号
+     */
+    public long markRestart() {
+        long gen = restartEpoch.incrementAndGet();
+        currentFile.set("");
+        currentPhase.set("");
+        log.info("Analyzer marked restart epoch={}", gen);
+        return gen;
+    }
+
     private void loop() {
         Path root = Paths.get(properties.getBatch().getDir()).toAbsolutePath().normalize();
         Path processing = root.resolve("processing");
@@ -108,6 +132,8 @@ public class StreamBatchAnalyzer {
     }
 
     private void processOne(Path inboxFile, Path processing, Path done, Path failed) {
+        long epochAtStart = restartEpoch.get();
+        processEpoch.set(Long.valueOf(epochAtStart));
         String batchId = stripExt(inboxFile.getFileName().toString());
         currentFile.set(batchId);
         Path work = processing.resolve(inboxFile.getFileName());
@@ -116,6 +142,11 @@ public class StreamBatchAnalyzer {
         result.setCsvPath(inboxFile.toString());
         result.setFinishedAt(Instant.now());
         try {
+            if (epochAtStart != restartEpoch.get()) {
+                log.info("Skip batch {} — restart during dequeue", batchId);
+                moveToDiscarded(inboxFile);
+                return;
+            }
             Files.createDirectories(processing);
             Files.createDirectories(done);
             Files.createDirectories(failed);
@@ -242,8 +273,26 @@ public class StreamBatchAnalyzer {
                 publish(result);
             }
 
+            applyCommandNetPass(batchId, sourceCsv, sceneOutputDir, analysisIds,
+                    sceneSummaries, byRank, allLabels, allReportRows, result);
+
+            int netsAfter = 0;
+            int trackScenesAfter = 0;
+            int pollingScenesAfter = 0;
+            for (StreamSceneSummary s : sceneSummaries) {
+                netsAfter += s.getNetworkCount();
+                if (isPolling(s.getSceneType())) {
+                    pollingScenesAfter++;
+                } else if (!"COMMAND_NET".equals(s.getSceneType())) {
+                    trackScenesAfter++;
+                }
+            }
+            result.setScenes(sceneSummaries);
+            result.setSceneCount(sceneSummaries.size());
+            result.setTrackSceneCount(trackScenesAfter);
+            result.setPollingSceneCount(pollingScenesAfter);
             result.setAnalysisIds(analysisIds);
-            result.setNetworkCount(networkTotal);
+            result.setNetworkCount(netsAfter);
             result.setLabels(allLabels);
             result.setTrackCount(allLabels.size());
             result.setReportRows(allReportRows);
@@ -277,13 +326,42 @@ public class StreamBatchAnalyzer {
             }
         } finally {
             result.setFinishedAt(Instant.now());
-            publish(result);
-            currentFile.set("");
-            currentPhase.set("");
+            if (epochAtStart == restartEpoch.get()) {
+                publish(result);
+            } else {
+                log.info("Discard analysis result for {} — restart epoch {} -> {}",
+                        batchId, epochAtStart, restartEpoch.get());
+            }
+            if (restartEpoch.get() == epochAtStart) {
+                currentFile.set("");
+                currentPhase.set("");
+            }
+            processEpoch.remove();
+        }
+    }
+
+    private void moveToDiscarded(Path file) {
+        try {
+            if (file == null || !Files.exists(file)) {
+                return;
+            }
+            Path root = Paths.get(properties.getBatch().getDir()).toAbsolutePath().normalize();
+            Path discarded = root.resolve("discarded");
+            Files.createDirectories(discarded);
+            Files.move(file, discarded.resolve(file.getFileName()), StandardCopyOption.REPLACE_EXISTING);
+        } catch (Exception e) {
+            log.warn("move discarded failed: {}", e.getMessage());
         }
     }
 
     private void publish(StreamBatchResult result) {
+        if (result == null) {
+            return;
+        }
+        Long ep = processEpoch.get();
+        if (ep != null && ep.longValue() != restartEpoch.get()) {
+            return;
+        }
         result.setFinishedAt(Instant.now());
         resultStore.put(result);
     }
@@ -345,6 +423,9 @@ public class StreamBatchAnalyzer {
 
         root.set("labels", objectMapper.valueToTree(result.getLabels()));
         root.set("reportRows", objectMapper.valueToTree(result.getReportRows()));
+        if (result.getCommandNetPass() != null && !result.getCommandNetPass().isEmpty()) {
+            root.set("commandNetPass", objectMapper.valueToTree(result.getCommandNetPass()));
+        }
         if (result.getOccupancy() != null && !result.getOccupancy().isEmpty()) {
             root.set("occupancy", objectMapper.valueToTree(result.getOccupancy()));
         } else {
@@ -430,6 +511,126 @@ public class StreamBatchAnalyzer {
      * 优先用 process-scene 的 reportRows（与主流程明细表同源，含目标类型/波道）；
      * 若无则回退 session.networks.targets。
      */
+    private void applyCommandNetPass(
+            String batchId,
+            String sourceCsv,
+            String sceneOutputDir,
+            List<String> analysisIds,
+            List<StreamSceneSummary> sceneSummaries,
+            Map<Integer, StreamSceneSummary> byRank,
+            List<StreamTrackLabel> allLabels,
+            List<Map<String, Object>> allReportRows,
+            StreamBatchResult result
+    ) {
+        result.setStatus("COMMAND_NET");
+        currentPhase.set("COMMAND_NET");
+        publish(result);
+        log.info("批次 {} 指挥网二次分析 sessions={}", batchId, analysisIds.size());
+        JsonNode pass;
+        try {
+            if (analysisIds == null || analysisIds.isEmpty()) {
+                ObjectNode skip = objectMapper.createObjectNode();
+                skip.put("skipped", true);
+                skip.put("skipReason", "没有一次分析会话");
+                pass = skip;
+            } else {
+                pass = analyzeClient.commandNetPass(sourceCsv, sceneOutputDir, analysisIds);
+            }
+        } catch (Exception e) {
+            log.warn("批次 {} 指挥网二次失败，保留一次结果: {}", batchId, e.getMessage());
+            ObjectNode skip = objectMapper.createObjectNode();
+            skip.put("skipped", true);
+            skip.put("skipReason", e.getMessage() == null ? "指挥网二次失败" : e.getMessage());
+            result.setCommandNetPass(slimCommandNetPass(skip));
+            return;
+        }
+        result.setCommandNetPass(slimCommandNetPass(pass));
+        if (pass.path("skipped").asBoolean(false)) {
+            log.info("批次 {} 指挥网二次跳过: {}", batchId, text(pass, "skipReason"));
+            return;
+        }
+        Set<Integer> replaced = new HashSet<Integer>();
+        JsonNode replacedNode = pass.path("replacedRanks");
+        if (replacedNode.isArray()) {
+            for (JsonNode n : replacedNode) {
+                replaced.add(Integer.valueOf(n.asInt()));
+            }
+        }
+        if (!replaced.isEmpty()) {
+            sceneSummaries.removeIf(s -> replaced.contains(Integer.valueOf(s.getRank())));
+            allLabels.removeIf(l -> replaced.contains(Integer.valueOf(l.getSceneRank())));
+            allReportRows.removeIf(row -> {
+                Object rank = row.get("sceneRank");
+                return rank instanceof Number && replaced.contains(Integer.valueOf(((Number) rank).intValue()));
+            });
+            for (Integer rank : replaced) {
+                byRank.remove(rank);
+            }
+        }
+        JsonNode items = pass.path("items");
+        if (!items.isArray()) {
+            return;
+        }
+        for (JsonNode item : items) {
+            int rank = item.path("rank").asInt(0);
+            if (rank <= 0) {
+                continue;
+            }
+            StreamSceneSummary sum = new StreamSceneSummary();
+            sum.setRank(rank);
+            sum.setSceneType(text(item, "sceneType"));
+            JsonNode session = item.path("session");
+            String analysisId = text(session, "analysisId");
+            int netCount = session.path("networkCount").asInt(item.path("networkCount").asInt(0));
+            sum.setAnalysisId(analysisId);
+            sum.setNetworkCount(netCount);
+            sum.setWindowStartMs(item.path("spanStartEpochMs").asLong(0) > 0
+                    ? Long.valueOf(item.path("spanStartEpochMs").asLong()) : null);
+            sum.setWindowEndMs(item.path("spanEndEpochMs").asLong(0) > 0
+                    ? Long.valueOf(item.path("spanEndEpochMs").asLong()) : null);
+            sceneSummaries.add(sum);
+            byRank.put(Integer.valueOf(rank), sum);
+            if (analysisId != null && !analysisId.isEmpty() && !analysisIds.contains(analysisId)) {
+                analysisIds.add(analysisId);
+            }
+            JsonNode reportRowsNode = item.path("reportRows");
+            if (reportRowsNode.isArray()) {
+                for (JsonNode row : reportRowsNode) {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> map = objectMapper.convertValue(row, Map.class);
+                    allReportRows.add(map);
+                }
+            }
+            allLabels.addAll(extractLabels(batchId, rank, sum.getSceneType(), analysisId, item));
+        }
+        sceneSummaries.sort(Comparator.comparingInt(StreamSceneSummary::getRank));
+        log.info("批次 {} 指挥网二次完成: replaced={} newScenes={}",
+                batchId, replaced.size(), items.size());
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> slimCommandNetPass(JsonNode pass) {
+        ObjectNode slim = objectMapper.createObjectNode();
+        if (pass == null) {
+            slim.put("skipped", true);
+            slim.put("skipReason", "指挥网二次无响应");
+            return objectMapper.convertValue(slim, Map.class);
+        }
+        slim.put("skipped", pass.path("skipped").asBoolean(false));
+        slim.put("skipReason", text(pass, "skipReason"));
+        slim.put("occupancyWindowCount", pass.path("occupancyWindowCount").asInt(0));
+        slim.put("clusterCount", pass.path("clusterCount").asInt(0));
+        slim.put("commandNetOutputDir", text(pass, "commandNetOutputDir"));
+        slim.put("elapsedMs", pass.path("elapsedMs").asLong(0L));
+        if (pass.has("replacedRanks")) {
+            slim.set("replacedRanks", pass.get("replacedRanks"));
+        }
+        if (pass.has("awacsPanels")) {
+            slim.set("awacsPanels", pass.get("awacsPanels"));
+        }
+        return objectMapper.convertValue(slim, Map.class);
+    }
+
     private List<StreamTrackLabel> extractLabels(String streamBatchId,
                                                  int sceneRank,
                                                  String sceneType,

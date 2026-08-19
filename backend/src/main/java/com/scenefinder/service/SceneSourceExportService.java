@@ -1,6 +1,7 @@
 package com.scenefinder.service;
 
 import com.pdwfx.signal.util.NSignalTimeColumns;
+import com.scenefinder.model.AwacsOccupancyWindow;
 import com.scenefinder.model.FreqRowGroup;
 import com.scenefinder.model.SceneOverlapGroup;
 import com.scenefinder.model.SceneSummaryEntry;
@@ -97,13 +98,57 @@ public class SceneSourceExportService {
         if (!fromExport.isEmpty()) {
             return fromExport;
         }
-        if (scene.getSceneType() == SceneType.TRACK_CONTINUOUS && !scene.getTrackIds().isEmpty()) {
+        if ((scene.getSceneType() == SceneType.TRACK_CONTINUOUS
+                || scene.getSceneType() == SceneType.COMMAND_NET)
+                && !scene.getTrackIds().isEmpty()) {
             Set<SourceRowRef> fromTrackRows = loadRowRefsFromTrackRows(outputDir, scene.getTrackIds(), sourceInput);
             if (!fromTrackRows.isEmpty()) {
                 return fromTrackRows;
             }
         }
         return scanRowRefsByWindow(sourceInput, scene);
+    }
+
+    /**
+     * 扫描全批 CSV：命中任一预警机占用窗的行（含未建轨点）。
+     */
+    public Set<SourceRowRef> scanRowRefsByOccupancyWindows(
+            Path sourceInput,
+            List<AwacsOccupancyWindow> windows
+    ) throws IOException {
+        Set<SourceRowRef> refs = new LinkedHashSet<>();
+        if (windows == null || windows.isEmpty()) {
+            return refs;
+        }
+        for (Path csvFile : listCsvFiles(sourceInput)) {
+            String sourceFile = csvFile.toAbsolutePath().normalize().toString();
+            try (BufferedReader reader = openUtf8WithoutBom(csvFile);
+                 CSVParser parser = CSVFormat.DEFAULT.builder()
+                         .setHeader()
+                         .setSkipHeaderRecord(true)
+                         .setIgnoreEmptyLines(true)
+                         .setTrim(true)
+                         .build()
+                         .parse(reader)) {
+                long row = 1;
+                for (CSVRecord record : parser) {
+                    row++;
+                    Double frequency = parseDouble(record, "pl");
+                    String timeText = record.isMapped("zcsj") ? record.get("zcsj") : null;
+                    if (frequency == null || timeText == null || timeText.trim().isEmpty()) {
+                        continue;
+                    }
+                    if (!NSignalTimeColumns.isValidSceneInput(record)) {
+                        continue;
+                    }
+                    Instant time = parseTime(timeText.trim());
+                    if (AwacsCommandNetService.matchesAny(frequency.doubleValue(), time.toEpochMilli(), windows)) {
+                        refs.add(new SourceRowRef(sourceFile, row));
+                    }
+                }
+            }
+        }
+        return refs;
     }
 
     /**

@@ -88,6 +88,12 @@ public class AnalyzeOptions {
                 null, null, null, null, null, null, null, null, null);
     }
 
+    public static AnalyzeOptions forCommandNet(String outputDir, Double freqTolerance) {
+        return new AnalyzeOptions(
+                null, null, null, null, null, null, null, null, null, null, null, null, null,
+                null, null, freqTolerance, null, null, null, outputDir, Boolean.FALSE, Boolean.FALSE);
+    }
+
     public Double getFrameSeconds() {
         return frameSeconds;
     }

@@ -82,6 +82,15 @@
         :scene-result="sceneResult"
         :allowed-ranks="bearingAllowedRanks"
       />
+
+      <SceneFreqHopTrackViz
+        v-if="hoppingViews.length"
+        :hopping-track-views="hoppingViews"
+        :import-scatter="visualizationPayload && visualizationPayload.importScatter"
+        :report-rows="allRows"
+      />
+
+      <SceneAwacsCommandNetViz :command-net-pass="commandNetPass" />
     </section>
 
     <SceneResultsCharts
@@ -177,6 +186,8 @@ import SceneBearingViz from "./SceneBearingViz.vue";
 import SceneAnalysisBearingViz from "./SceneAnalysisBearingViz.vue";
 import SceneCrossFreqMatchViz from "./SceneCrossFreqMatchViz.vue";
 import SceneResultsCharts from "./SceneResultsCharts.vue";
+import SceneFreqHopTrackViz from "./SceneFreqHopTrackViz.vue";
+import SceneAwacsCommandNetViz from "./SceneAwacsCommandNetViz.vue";
 import {
   TARGET_TYPE_OPTIONS,
   aggregateStats,
@@ -200,6 +211,7 @@ const props = defineProps({
   report: { type: Object, default: () => ({ rows: [], buildTimeMs: 0 }) },
   sceneResult: { type: Object, default: null },
   forwardItems: { type: Array, default: () => [] },
+  commandNetPass: { type: Object, default: null },
   loading: { type: Boolean, default: false },
   activeRowKey: { type: String, default: "" }
 });
@@ -282,10 +294,29 @@ const alignedTrajectoryViews = computed(() => {
     targetType: r.targetType,
     targetTypeLabel: r.targetTypeLabel || targetTypeLabel(r.targetType),
     freqMhz: r.networkFreqMhz,
-    meanAzimuthDeg: r.meanAzimuthDeg ?? null
+    meanAzimuthDeg: r.meanAzimuthDeg ?? null,
+    channel: r.commLinkChannel,
+    channelLabel: r.commLinkChannelLabel,
+    targetChannelsUsed: r.targetChannelsUsed
   }));
   return applyStreamTargetTypeLabelsToViews(views, labels);
 });
+
+const hoppingViews = computed(() =>
+  applyStreamTargetTypeLabelsToViews(
+    visualizationPayload.value?.hoppingTrackViews || [],
+    (allRows.value || []).map((r) => ({
+      sceneRank: r.sceneRank,
+      targetType: r.targetType,
+      targetTypeLabel: r.targetTypeLabel || targetTypeLabel(r.targetType),
+      freqMhz: r.networkFreqMhz,
+      meanAzimuthDeg: r.meanAzimuthDeg ?? null,
+      channel: r.commLinkChannel,
+      channelLabel: r.commLinkChannelLabel,
+      targetChannelsUsed: r.targetChannelsUsed
+    }))
+  )
+);
 
 watch(
   unifiedSceneTabs,

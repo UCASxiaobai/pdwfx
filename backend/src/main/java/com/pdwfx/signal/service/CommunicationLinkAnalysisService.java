@@ -28,18 +28,26 @@ public class CommunicationLinkAnalysisService {
     public static final String CHANNEL_UNKNOWN = "UNKNOWN";
     public static final String LABEL_UNKNOWN = "不明";
 
-    public static final double DUTY_AWACS_MIN_PCT = 4.0;
-    public static final double DUTY_GROUND_MIN_PCT = 25.0;
+    /** 预警机占空比下沿（%），略低于 D03 实测 3.28 */
+    public static final double DUTY_AWACS_MIN_PCT = 3.2;
+    /** 预警机占空比上沿（%），略高于 D03 实测 10.8；与地面站下沿相接 */
+    public static final double DUTY_AWACS_MAX_PCT = 11.0;
+    /** 地面站占空比下沿（%）：高于预警机上沿即地面站 */
+    public static final double DUTY_GROUND_MIN_PCT = DUTY_AWACS_MAX_PCT;
     public static final double AWACS_PRI_MAX_MS = 2000.0;
+    /** 平均发信间隔（主周期，缺省回退 PRI）大于此值则判为飞机 */
+    public static final double AIR_TX_INTERVAL_MIN_MS = 2000.0;
 
     private static final double SCORE_THRESHOLD = 0.40;
 
-    // D03 定频 VU 参考
-    private static final double D03_DWELL_LO = 20.0;
-    private static final double D03_DWELL_HI = 32.0;
+    // D03 定频 VU 参考（实测驻留 24–28ms、PRI 均值 222–857ms、占空 3.28–10.8%）
+    private static final double D03_DWELL_LO = 22.0;
+    private static final double D03_DWELL_HI = 30.0;
     private static final double D03_PRI_LO_MS = 80.0;
     private static final double D03_PRI_HI_MS = 1900.0;
-    private static final double D03_DUTY_LO = 3.0;
+    private static final double D03_PRI_TYPICAL_LO_MS = 222.0;
+    private static final double D03_PRI_TYPICAL_HI_MS = 857.0;
+    private static final double D03_DUTY_LO = 3.2;
     private static final double D03_DUTY_HI = 11.0;
 
     // D04
@@ -51,18 +59,20 @@ public class CommunicationLinkAnalysisService {
     private static final double D04_PRI_HI_MS = 320.0;
     private static final double D04_GROUND_DUTY_REF = 25.0;
     private static final double D04_AWACS_DUTY_REF = 7.35;
+    private static final double D04_AWACS_DUTY_LO = 5.5;
+    private static final double D04_AWACS_DUTY_HI = 9.5;
     private static final double D04_NET_DUTY_LO = 28.0;
     private static final double D04_NET_DUTY_HI = 38.0;
 
-    // D05
-    private static final double D05_DWELL_LO = 15.0;
-    private static final double D05_DWELL_HI = 42.0;
+    // D05（实测驻留 18–39ms、预警占空 4.22–7.53%）
+    private static final double D05_DWELL_LO = 16.0;
+    private static final double D05_DWELL_HI = 41.0;
     private static final double D05_AWACS_PRI_LO_MS = 60.0;
     private static final double D05_AWACS_PRI_HI_MS = 802.0;
     private static final double D05_FIGHTER_PRI_LO_MS = 1200.0;
     private static final double D05_FIGHTER_PRI_HI_MS = 10110.0;
-    private static final double D05_AWACS_DUTY_LO = 4.0;
-    private static final double D05_AWACS_DUTY_HI = 8.0;
+    private static final double D05_AWACS_DUTY_LO = 4.2;
+    private static final double D05_AWACS_DUTY_HI = 7.6;
     private static final double D05_FIGHTER_DUTY_HI = 1.0;
     private static final double D05_NET_DUTY_LO = 6.0;
     private static final double D05_NET_DUTY_HI = 11.0;
@@ -81,24 +91,80 @@ public class CommunicationLinkAnalysisService {
     }
 
     public boolean qualifiesSecondaryAwacs(TargetView target) {
-        double duty = target.getAvgDutyCycle();
-        if (duty < DUTY_AWACS_MIN_PCT || duty >= DUTY_GROUND_MIN_PCT) return false;
+        if (!isAwacsDutyBand(target.getAvgDutyCycle())) {
+            return false;
+        }
         Double pri = target.getEstimatedPriMs();
         return pri != null && pri > 0 && pri < AWACS_PRI_MAX_MS;
     }
 
     public String secondaryAwacsNote(TargetView target) {
-        return String.format("次级：占空比%.1f%%≥%.0f%%且PRI%.0fms<%.0fs → 预警机",
-                target.getAvgDutyCycle(), DUTY_AWACS_MIN_PCT,
+        return String.format("次级：占空比%.1f%%∈[%.1f%%, %.0f%%)且PRI%.0fms<%.0fs → 预警机",
+                target.getAvgDutyCycle(), DUTY_AWACS_MIN_PCT, DUTY_AWACS_MAX_PCT,
                 target.getEstimatedPriMs(), AWACS_PRI_MAX_MS / 1000.0);
+    }
+
+    /**
+     * 占空比三分法：飞机 &lt; 预警机 &lt; 地面站。
+     * ≥ {@value #DUTY_GROUND_MIN_PCT}% 地面站；[{@value #DUTY_AWACS_MIN_PCT}%, {@value #DUTY_AWACS_MAX_PCT}%) 预警机；其余飞机。
+     */
+    public static String platformTypeByDuty(double dutyPct) {
+        if (dutyPct >= DUTY_GROUND_MIN_PCT) {
+            return "GROUND";
+        }
+        if (dutyPct >= DUTY_AWACS_MIN_PCT) {
+            return "AWACS";
+        }
+        return "AIR";
+    }
+
+    public static boolean isAwacsDutyBand(double dutyPct) {
+        return dutyPct >= DUTY_AWACS_MIN_PCT && dutyPct < DUTY_AWACS_MAX_PCT;
+    }
+
+    /**
+     * 平均发信间隔：优先主周期 {@code periodMs}（burst 起点间隔），缺省回退脉冲 PRI。
+     */
+    public static Double averageTxIntervalMs(Double periodMs, Double estimatedPriMs) {
+        if (periodMs != null && periodMs.doubleValue() > 0) {
+            return periodMs;
+        }
+        if (estimatedPriMs != null && estimatedPriMs.doubleValue() > 0) {
+            return estimatedPriMs;
+        }
+        return null;
+    }
+
+    public static boolean isLongTxIntervalAir(Double periodMs, Double estimatedPriMs) {
+        Double interval = averageTxIntervalMs(periodMs, estimatedPriMs);
+        return interval != null && interval.doubleValue() > AIR_TX_INTERVAL_MIN_MS;
+    }
+
+    public static boolean isLongTxIntervalAir(TargetView target) {
+        if (target == null) {
+            return false;
+        }
+        return isLongTxIntervalAir(target.getPeriodMs(), target.getEstimatedPriMs());
+    }
+
+    public static String longTxIntervalAirNote(TargetView target) {
+        Double interval = averageTxIntervalMs(
+                target == null ? null : target.getPeriodMs(),
+                target == null ? null : target.getEstimatedPriMs());
+        double ms = interval == null ? 0d : interval.doubleValue();
+        return String.format("发信间隔：平均%.0fms > %.0fs → 飞机",
+                ms, AIR_TX_INTERVAL_MIN_MS / 1000.0);
     }
 
     private void refineTargetTypes(NetworkView view, LinkAssessment link) {
         for (TargetView t : view.getTargets()) {
-            double dwell = t.getBurstDurationMeanMs();
             String refined = null;
             String note = null;
-            switch (link.channel) {
+            if (isLongTxIntervalAir(t)) {
+                refined = "AIR";
+                note = longTxIntervalAirNote(t);
+            } else {
+                switch (link.channel) {
                 case CHANNEL_D01:
                 case CHANNEL_D06:
                     if ("GROUND".equals(t.getTargetType())) {
@@ -116,17 +182,10 @@ public class CommunicationLinkAnalysisService {
                     break;
                 case CHANNEL_D03:
                     refined = "AWACS";
-                    note = String.format("波道D03：仅预警机发射；%s；驻留%.1fms",
-                            link.subModeLabel, dwell);
+                    note = String.format("波道D03：仅预警机发射；%s", link.subModeLabel);
                     break;
                 case CHANNEL_D04:
-                    if (inBand(dwell, D04_AWACS_DWELL_LO, D04_AWACS_DWELL_HI)) {
-                        refined = "AWACS";
-                        note = String.format("波道D04：驻留%.1fms≈预警机(~18.5ms)", dwell);
-                    } else if (inBand(dwell, D04_GROUND_DWELL_LO, D04_GROUND_DWELL_HI)) {
-                        refined = "GROUND";
-                        note = String.format("波道D04：驻留%.1fms≈地面站(~63.4ms)", dwell);
-                    }
+                    // 平台类型只跟占空比（及测向辅证），不用驻留改写
                     break;
                 case CHANNEL_D05:
                     if ("MASTER".equals(t.getRole())) {
@@ -134,11 +193,12 @@ public class CommunicationLinkAnalysisService {
                         note = String.format("波道D05：预警机询问；%s", link.subModeLabel);
                     } else if ("SLAVE".equals(t.getRole())) {
                         refined = "AIR";
-                        note = String.format("波道D05：作战飞机应答；驻留%.1fms", dwell);
+                        note = String.format("波道D05：作战飞机应答；%s", link.subModeLabel);
                     }
                     break;
                 default:
                     break;
+                }
             }
             if (refined != null && !refined.equals(t.getTargetType())) {
                 t.setTargetType(refined);
@@ -168,7 +228,11 @@ public class CommunicationLinkAnalysisService {
         double s02 = scoreD02(dataHint, view, mix, masters, slaves, airSlaves);
         double s03 = scoreD03(dataHint, view, mix, targets, dwells, awacsSingle, subMode);
         double s04 = scoreD04(dataHint, view, mix, dwells, d04Pattern);
-        double s05 = scoreD05(dataHint, view, mix, targets, masters, slaves, airSlaves, dwells, subMode);
+        boolean sceneTrackHint = hasSceneTrackIds(signals);
+        boolean pollingAwacsHint = sceneTrackHint && mix.hasAwacs && mix.hasAir
+                && distinctSceneTrackIds(signals) >= 2;
+        double s05 = scoreD05(dataHint, view, mix, targets, masters, slaves, airSlaves, dwells, subMode,
+                sceneTrackHint, pollingAwacsHint);
         double s06 = scoreD06(dataHint, view, mix, dwells, d04Pattern);
         boolean groundAwacsOnly = isGroundAwacsOnlyPlatform(targets, mix);
 
@@ -278,10 +342,12 @@ public class CommunicationLinkAnalysisService {
 
         TargetView emitter = primaryEmitter(targets);
         if (emitter == null) return 0;
+        if (!inBand(emitter.getAvgDutyCycle(), D03_DUTY_LO, D03_DUTY_HI)) return 0;
 
         double s = hintBoost(hint, CHANNEL_D03, 0.3);
         if (inBand(emitter.getBurstDurationMeanMs(), D03_DWELL_LO, D03_DWELL_HI)) s += 0.25;
         if (priInBand(emitter.getEstimatedPriMs(), D03_PRI_LO_MS, D03_PRI_HI_MS)) s += 0.2;
+        if (priInBand(emitter.getEstimatedPriMs(), D03_PRI_TYPICAL_LO_MS, D03_PRI_TYPICAL_HI_MS)) s += 0.1;
         if (inBand(emitter.getAvgDutyCycle(), D03_DUTY_LO, D03_DUTY_HI)) s += 0.15;
         if ("HOPPING".equals(view.getCommMode()) || "SAME_FREQ".equals(view.getCommMode())) s += 0.05;
         return s;
@@ -329,7 +395,7 @@ public class CommunicationLinkAnalysisService {
                 .anyMatch(t -> t.getAvgDutyCycle() >= D04_GROUND_DUTY_REF - 10);
         boolean awacsDutyOk = targets.stream()
                 .filter(t -> "AWACS".equals(t.getTargetType()) || awacsLikeTarget(t))
-                .anyMatch(t -> inBand(t.getAvgDutyCycle(), 3, 15));
+                .anyMatch(t -> inBand(t.getAvgDutyCycle(), D04_AWACS_DUTY_LO, D04_AWACS_DUTY_HI));
         if (groundDutyOk && awacsDutyOk) s += 0.12;
         if (targets.stream().anyMatch(t -> priInBand(t.getEstimatedPriMs(), D04_PRI_LO_MS, D04_PRI_HI_MS))) {
             s += 0.08;
@@ -343,16 +409,72 @@ public class CommunicationLinkAnalysisService {
         if (!"AIR".equals(t.getTargetType())) return false;
         double duty = t.getAvgDutyCycle();
         Double pri = t.getEstimatedPriMs();
-        return duty >= DUTY_AWACS_MIN_PCT && duty < DUTY_GROUND_MIN_PCT
+        return isAwacsDutyBand(duty)
                 && pri != null && pri >= D04_PRI_LO_MS && pri <= D04_PRI_HI_MS;
+    }
+
+    private static boolean hasSceneTrackIds(List<DetectSignal> signals) {
+        if (signals == null) {
+            return false;
+        }
+        int n = 0;
+        for (DetectSignal s : signals) {
+            if (s.getSceneTrackId() != null && s.getSceneTrackId().intValue() > 0) {
+                n++;
+                if (n >= 2) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static int distinctSceneTrackIds(List<DetectSignal> signals) {
+        if (signals == null) {
+            return 0;
+        }
+        java.util.Set<Integer> ids = new java.util.HashSet<Integer>();
+        for (DetectSignal s : signals) {
+            if (s.getSceneTrackId() != null && s.getSceneTrackId().intValue() > 0) {
+                ids.add(s.getSceneTrackId());
+            }
+        }
+        return ids.size();
     }
 
     /** 预警机+作战飞机，无地面站 */
     private double scoreD05(String hint, NetworkView view, PlatformMix mix, List<TargetView> targets,
-                            long masters, long slaves, long airSlaves, List<Double> dwells, String subMode) {
+                            long masters, long slaves, long airSlaves, List<Double> dwells, String subMode,
+                            boolean sceneTrackHint) {
+        return scoreD05(hint, view, mix, targets, masters, slaves, airSlaves, dwells, subMode,
+                sceneTrackHint, false);
+    }
+
+    private double scoreD05(String hint, NetworkView view, PlatformMix mix, List<TargetView> targets,
+                            long masters, long slaves, long airSlaves, List<Double> dwells, String subMode,
+                            boolean sceneTrackHint, boolean pollingAwacsHint) {
         if (mix.hasGround) return 0;
-        if (!mix.hasAwacs || !mix.hasAir) return 0;
+        boolean mixOk = mix.hasAwacs && mix.hasAir;
+        if (!mixOk && sceneTrackHint && targets != null && targets.size() >= 3) {
+            long highDuty = 0;
+            long lowDuty = 0;
+            for (TargetView t : targets) {
+                if (isAwacsDutyBand(t.getAvgDutyCycle())) {
+                    highDuty++;
+                } else if (t.getAvgDutyCycle() < DUTY_AWACS_MIN_PCT) {
+                    lowDuty++;
+                }
+            }
+            mixOk = highDuty >= 1 && lowDuty >= 1;
+        }
+        if (!mixOk) return 0;
         double s = hintBoost(hint, CHANNEL_D05, 0.35);
+        if (sceneTrackHint && targets != null && targets.size() >= 3) {
+            s += 0.2;
+        }
+        if (pollingAwacsHint) {
+            s += 0.12;
+        }
         if (masters >= 1 && slaves >= 2) s += 0.15;
         if (airSlaves >= 2) s += 0.15;
         long dwellHit = dwells.stream().filter(d -> inBand(d, D05_DWELL_LO, D05_DWELL_HI)).count();
@@ -395,7 +517,7 @@ public class CommunicationLinkAnalysisService {
             case CHANNEL_D02: return scoreD02(hint, view, mix, masters, slaves, airSlaves);
             case CHANNEL_D03: return scoreD03(hint, view, mix, targets, dwells, awacsSingle, subMode);
             case CHANNEL_D04: return scoreD04(hint, view, mix, dwells, d04);
-            case CHANNEL_D05: return scoreD05(hint, view, mix, targets, masters, slaves, airSlaves, dwells, subMode);
+            case CHANNEL_D05: return scoreD05(hint, view, mix, targets, masters, slaves, airSlaves, dwells, subMode, false);
             case CHANNEL_D06: return scoreD06(hint, view, mix, dwells, d04);
             default: return 0;
         }
