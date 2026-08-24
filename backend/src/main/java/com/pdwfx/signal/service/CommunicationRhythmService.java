@@ -38,6 +38,10 @@ public class CommunicationRhythmService {
     private static final double BURST_GAP_PRI_FACTOR = 3.0;
     private static final int MAX_CHART_POINTS = 800;
     private static final int PRI_HIST_BINS = 40;
+    /** 同频对端判定容差（MHz） */
+    private static final double PEER_FREQ_TOL_MHZ = 0.05;
+    /** 间隙被对端占用比例达到此值则视为等待，不计入主周期 */
+    private static final double PEER_GAP_FILL_RATIO = 0.35;
 
     /**
      * 按 TOA/PRI 多轨关联拆分；无法拆分或样本不足时返回原簇。
@@ -145,6 +149,172 @@ public class CommunicationRhythmService {
         target.setDutyCycleTrend(downsample(m.dutyCycleTrend));
         target.setBurstTimelineSeries(downsample(m.burstTimelineSeries));
         target.setBursts(m.bursts);
+    }
+
+    /**
+     * 同频半双工对通：对端发信盖住的本端间隙不计入主周期。
+     * 几乎全部间隙被盖住时回退脉冲 PRI。
+     */
+    public void adjustPeriodForPeerOccupancy(List<TargetView> targets) {
+        if (targets == null || targets.size() < 2) {
+            return;
+        }
+        for (int i = 0; i < targets.size(); i++) {
+            TargetView self = targets.get(i);
+            List<TargetView> peers = sameFreqPeers(self, targets, i);
+            if (peers.isEmpty()) {
+                continue;
+            }
+            adjustOneTargetPeriod(self, peers);
+        }
+    }
+
+    private List<TargetView> sameFreqPeers(TargetView self, List<TargetView> targets, int selfIndex) {
+        List<TargetView> peers = new ArrayList<TargetView>();
+        double selfFreq = meanFreqMhz(self);
+        for (int j = 0; j < targets.size(); j++) {
+            if (j == selfIndex) {
+                continue;
+            }
+            TargetView other = targets.get(j);
+            if (Math.abs(meanFreqMhz(other) - selfFreq) <= PEER_FREQ_TOL_MHZ) {
+                peers.add(other);
+            }
+        }
+        return peers;
+    }
+
+    private void adjustOneTargetPeriod(TargetView self, List<TargetView> peers) {
+        List<BurstWindow> bursts = self.getBursts();
+        if (bursts == null || bursts.size() < 2) {
+            return;
+        }
+        List<BurstWindow> sorted = new ArrayList<BurstWindow>(bursts);
+        sorted.sort(Comparator.comparingLong(BurstWindow::getStart));
+        List<long[]> occupancy = mergeOccupancy(peerPulseOccupancy(peers));
+        if (occupancy.isEmpty()) {
+            return;
+        }
+        List<Long> samples = new ArrayList<Long>();
+        int gapCount = 0;
+        int filledCount = 0;
+        for (int i = 0; i < sorted.size() - 1; i++) {
+            long gapStart = sorted.get(i).getEnd();
+            long gapEnd = sorted.get(i + 1).getStart();
+            long gap = gapEnd - gapStart;
+            if (gap <= 0L) {
+                continue;
+            }
+            gapCount++;
+            long cover = overlapMs(occupancy, gapStart, gapEnd);
+            double fill = cover / (double) gap;
+            if (fill >= PEER_GAP_FILL_RATIO) {
+                filledCount++;
+            } else {
+                samples.add(Long.valueOf(sorted.get(i + 1).getStart() - sorted.get(i).getStart()));
+            }
+        }
+        if (filledCount == 0 || gapCount == 0) {
+            return;
+        }
+        double newPeriod;
+        String note;
+        if (samples.isEmpty()) {
+            Double pri = self.getEstimatedPriMs();
+            newPeriod = pri != null && pri.doubleValue() > 0 ? pri.doubleValue() : 0d;
+            self.setPeriodMs(pri);
+            note = String.format("对端补隙：%d/%d 间隙被同频占用，主周期回退 PRI %.0fms",
+                    filledCount, gapCount, newPeriod);
+        } else {
+            long[] values = new long[samples.size()];
+            for (int i = 0; i < samples.size(); i++) {
+                values[i] = samples.get(i).longValue();
+            }
+            newPeriod = (double) medianInterval(values);
+            self.setPeriodMs(Double.valueOf(newPeriod));
+            note = String.format("对端补隙：%d/%d 间隙被同频占用，主周期 %.0fms",
+                    filledCount, gapCount, newPeriod);
+        }
+        self.setPeriodAdjustNote(note);
+    }
+
+    private static List<long[]> peerPulseOccupancy(List<TargetView> peers) {
+        List<long[]> raw = new ArrayList<long[]>();
+        for (TargetView peer : peers) {
+            List<DetectSignal> signals = peer.getClusteredSignals();
+            if (signals == null) {
+                continue;
+            }
+            for (DetectSignal s : signals) {
+                long t0 = s.getDetectTimesss();
+                long dwell = Math.max(1L, Math.round(s.getSignalDwellMs()));
+                raw.add(new long[]{t0, t0 + dwell});
+            }
+        }
+        return raw;
+    }
+
+    private static List<long[]> mergeOccupancy(List<long[]> raw) {
+        if (raw.isEmpty()) {
+            return raw;
+        }
+        raw.sort(new Comparator<long[]>() {
+            @Override
+            public int compare(long[] a, long[] b) {
+                return Long.compare(a[0], b[0]);
+            }
+        });
+        List<long[]> merged = new ArrayList<long[]>();
+        long[] cur = new long[]{raw.get(0)[0], raw.get(0)[1]};
+        for (int i = 1; i < raw.size(); i++) {
+            long[] n = raw.get(i);
+            if (n[0] <= cur[1]) {
+                cur[1] = Math.max(cur[1], n[1]);
+            } else {
+                merged.add(cur);
+                cur = new long[]{n[0], n[1]};
+            }
+        }
+        merged.add(cur);
+        return merged;
+    }
+
+    private static long overlapMs(List<long[]> occupancy, long gapStart, long gapEnd) {
+        long cover = 0L;
+        for (long[] iv : occupancy) {
+            if (iv[1] <= gapStart) {
+                continue;
+            }
+            if (iv[0] >= gapEnd) {
+                break;
+            }
+            long lo = Math.max(gapStart, iv[0]);
+            long hi = Math.min(gapEnd, iv[1]);
+            if (hi > lo) {
+                cover += hi - lo;
+            }
+        }
+        return cover;
+    }
+
+    private static double meanFreqMhz(TargetView target) {
+        List<DetectSignal> signals = target.getClusteredSignals();
+        if (signals != null && !signals.isEmpty()) {
+            double sum = 0d;
+            for (DetectSignal s : signals) {
+                sum += s.getFreq();
+            }
+            return sum / signals.size();
+        }
+        List<Double> freqs = target.getCommFreqMhzList();
+        if (freqs != null && !freqs.isEmpty()) {
+            return freqs.get(0).doubleValue();
+        }
+        List<BurstWindow> bursts = target.getBursts();
+        if (bursts != null && !bursts.isEmpty()) {
+            return bursts.get(0).getMeanFreq();
+        }
+        return 0d;
     }
 
     // ==================== 多 PRI 轨关联 ====================

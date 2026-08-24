@@ -6,7 +6,12 @@ import org.apache.commons.csv.CSVParser;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.nio.charset.Charset;
+import java.nio.charset.CharsetDecoder;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.MalformedInputException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -19,21 +24,81 @@ import java.util.Map;
  */
 public final class ImportFormatDetector {
 
+    private static final int CHARSET_SAMPLE_BYTES = 256 * 1024;
+
     private ImportFormatDetector() {
     }
 
     public static ImportFormat detectFromPath(Path csvPath) throws IOException {
-        byte[] head = Files.readAllBytes(csvPath);
-        int n = Math.min(head.length, 8192);
-        String charset = detectCharset(head, n);
-        try (BufferedReader reader = Files.newBufferedReader(csvPath, Charset.forName(charset));
+        ImportFormat utf8Format = detectWithCharset(csvPath, StandardCharsets.UTF_8);
+        if (utf8Format == ImportFormat.PDW_TABLE || utf8Format == ImportFormat.STANDARD
+                || utf8Format == ImportFormat.EXTERNAL_TARGET_LOCATE) {
+            return utf8Format;
+        }
+        ImportFormat gbkFormat = detectWithCharset(csvPath, Charset.forName("GBK"));
+        return gbkFormat != ImportFormat.UNKNOWN ? gbkFormat : utf8Format;
+    }
+
+    private static ImportFormat detectWithCharset(Path csvPath, Charset charset) throws IOException {
+        try (BufferedReader reader = openReader(csvPath, charset);
              CSVParser parser = CSVFormat.DEFAULT.builder()
                      .setHeader()
                      .setSkipHeaderRecord(true)
+                     .setIgnoreHeaderCase(true)
                      .build()
                      .parse(reader)) {
             return detect(toUpperHeaderIndex(parser.getHeaderMap()));
+        } catch (MalformedInputException ex) {
+            return ImportFormat.UNKNOWN;
         }
+    }
+
+    /**
+     * 按抽样识别编码，非法字节替换而不是抛错（雷情 CSV 常混有 GBK/截断 UTF-8）。
+     */
+    public static BufferedReader openReader(Path csvPath) throws IOException {
+        return openReader(csvPath, detectFileCharset(csvPath));
+    }
+
+    public static BufferedReader openReader(Path csvPath, Charset charset) throws IOException {
+        CharsetDecoder decoder = charset.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPLACE)
+                .onUnmappableCharacter(CodingErrorAction.REPLACE);
+        return new BufferedReader(new InputStreamReader(Files.newInputStream(csvPath), decoder));
+    }
+
+    public static BufferedReader openReader(InputStream in, Charset charset) {
+        CharsetDecoder decoder = charset.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPLACE)
+                .onUnmappableCharacter(CodingErrorAction.REPLACE);
+        return new BufferedReader(new InputStreamReader(in, decoder));
+    }
+
+    public static Charset detectFileCharset(Path csvPath) throws IOException {
+        byte[] sample = new byte[CHARSET_SAMPLE_BYTES];
+        int n;
+        try (InputStream in = Files.newInputStream(csvPath)) {
+            n = in.read(sample);
+        }
+        return charsetOf(sample, n);
+    }
+
+    public static Charset charsetOf(byte[] head, int n) {
+        if (n <= 0) {
+            return StandardCharsets.UTF_8;
+        }
+        int end = n;
+        while (end > 0 && (head[end - 1] & 0xC0) == 0x80) {
+            end--;
+        }
+        if (end > 0 && (head[end - 1] & 0x80) != 0) {
+            end--;
+        }
+        if (end <= 0) {
+            return StandardCharsets.UTF_8;
+        }
+        String utf8 = new String(head, 0, end, StandardCharsets.UTF_8);
+        return utf8.contains("\uFFFD") ? Charset.forName("GBK") : StandardCharsets.UTF_8;
     }
 
     /**
@@ -61,17 +126,16 @@ public final class ImportFormatDetector {
         boolean hasFreq = headerIndexUpper.containsKey("FREQ");
         boolean hasAzimuth = headerIndexUpper.containsKey("AZIMUTH");
 
-        if (hasDetectTime && hasLon && hasLat && !hasXhfw && !hasZcsj && !hasPl && !hasXhfd) {
-            if (hasZbxh || hasDwsx || headerIndexUpper.containsKey("MBNM")) {
-                return ImportFormat.EXTERNAL_TARGET_LOCATE;
-            }
-        }
-
         if (hasPl && hasXhfw && hasZcsj) {
             return ImportFormat.PDW_TABLE;
         }
         if (hasZbxh && (hasXhfw || hasZcsj || hasPl || hasXhfd)) {
             return ImportFormat.PDW_TABLE;
+        }
+        if (hasDetectTime && hasLon && hasLat && !hasXhfw && !hasZcsj && !hasPl && !hasXhfd) {
+            if (hasZbxh || hasDwsx || headerIndexUpper.containsKey("MBNM")) {
+                return ImportFormat.EXTERNAL_TARGET_LOCATE;
+            }
         }
         if (hasFreq && hasAzimuth) {
             return ImportFormat.STANDARD;
@@ -105,13 +169,5 @@ public final class ImportFormatDetector {
             default:
                 return "未知格式";
         }
-    }
-
-    private static String detectCharset(byte[] head, int n) {
-        if (n <= 0) {
-            return StandardCharsets.UTF_8.name();
-        }
-        String utf8 = new String(head, 0, n, StandardCharsets.UTF_8);
-        return utf8.contains("\uFFFD") ? "GBK" : StandardCharsets.UTF_8.name();
     }
 }

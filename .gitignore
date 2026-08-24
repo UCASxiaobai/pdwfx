@@ -21,6 +21,7 @@ tmp_*.py
 
 # Cursor / local debug
 .cursor/
+debug-*.log
 
 # Archives
 *.zip

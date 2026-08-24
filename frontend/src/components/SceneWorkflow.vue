@@ -3,7 +3,7 @@
     <header class="workflow-header">
       <h2>通信侦获信号分析系统</h2>
       <p class="subtitle">
-        原始 CSV → 场景筛选 → 场景数据作为信号分析输入 → 综合报表与网络研判
+        原始 CSV → 场景筛选（默认全段窗，与流式态势相同） → 场景数据作为信号分析输入 → 综合报表与网络研判
       </p>
       <ol class="steps">
         <li :class="{ done: pickedFiles.length }">上传数据</li>
@@ -52,11 +52,34 @@
 
     <section class="step-card">
       <h3>② 场景筛选参数</h3>
+      <label class="check-label">
+        <input v-model="params.fullSpanWindow" type="checkbox" />
+        全段时间窗（与流式态势一致：各频段按整段跨度评一次，不做滑动切分）
+      </label>
+      <p class="param-hint">
+        关闭后才使用下方评分时间窗/步进。全段窗可避免短窗把同一批目标拆碎，结果与流式分析对齐。
+      </p>
       <div class="param-grid">
         <label>频段下限 MHz <input v-model.number="params.freqMin" type="number" step="0.1" /></label>
         <label>频段上限 MHz <input v-model.number="params.freqMax" type="number" step="0.1" /></label>
-        <label>评分时间窗 (秒) <input v-model.number="params.windowSeconds" type="number" min="1" /></label>
-        <label>窗滑动步进 (秒) <input v-model.number="params.windowStepSeconds" type="number" min="1" /></label>
+        <label>
+          评分时间窗 (秒)
+          <input
+            v-model.number="params.windowSeconds"
+            type="number"
+            min="1"
+            :disabled="params.fullSpanWindow"
+          />
+        </label>
+        <label>
+          窗滑动步进 (秒)
+          <input
+            v-model.number="params.windowStepSeconds"
+            type="number"
+            min="1"
+            :disabled="params.fullSpanWindow"
+          />
+        </label>
         <label>场景最少轨迹数 <input v-model.number="params.minTracksInScene" type="number" min="1" /></label>
         <label>TOP-K 连续轨迹 <input v-model.number="params.topKTrackScenes" type="number" min="1" /></label>
         <label>TOP-K 轮询场景 <input v-model.number="params.topKPollingScenes" type="number" min="1" /></label>
@@ -84,7 +107,12 @@
 
     <section class="step-card">
       <h3>测向–定位关联</h3>
-      <SceneDfMatchPanel :upload-files="pickedFiles" @match-result="dfMatchResult = $event" />
+      <SceneDfMatchPanel
+        ref="dfMatchPanel"
+        :upload-files="pickedFiles"
+        :output-dir="sceneResult?.outputDir || params.outputDir || ''"
+        @match-result="dfMatchResult = $event"
+      />
     </section>
 
     <section class="step-card actions">
@@ -170,11 +198,12 @@ const pickedFiles = ref([]);
 const params = reactive({
   freqMin: 200,
   freqMax: 1000,
+  fullSpanWindow: true,
   windowSeconds: 120,
   windowStepSeconds: 30,
   minTracksInScene: 1,
-  topKTrackScenes: 20,
-  topKPollingScenes: 20,
+  topKTrackScenes: 50,
+  topKPollingScenes: 50,
   outputDir: "./output",
   freqTolerance: 0.01,
   preloadAll: true,
@@ -193,6 +222,7 @@ const commandNetPass = ref(null);
 const selectedRanks = ref([]);
 const activeRowKey = ref("");
 const explorerRef = ref(null);
+const dfMatchPanel = ref(null);
 const initialExplorerScene = ref(null);
 const initialExplorerNetwork = ref(null);
 const importScatter = ref(null);
@@ -354,6 +384,7 @@ async function runFullPipeline() {
       return;
     }
     await runForwardAndReport(signal);
+    await autoRunDfMatch();
     statusMsg.value = `完成：${report.value?.rows?.length || 0} 条目标明细`;
   } catch (e) {
     errorMsg.value =
@@ -379,6 +410,19 @@ async function runForwardOnly() {
     errorMsg.value = e?.message || "失败";
   } finally {
     pipelineRunning.value = false;
+  }
+}
+
+async function autoRunDfMatch() {
+  await nextTick();
+  if (!dfMatchPanel.value?.runIfReady) return;
+  statusMsg.value = "测向–定位匹配中…";
+  try {
+    await dfMatchPanel.value.runIfReady();
+  } catch (e) {
+    if (e?.name !== "AbortError") {
+      errorMsg.value = e?.message || "测向匹配失败";
+    }
   }
 }
 
@@ -548,13 +592,21 @@ function onTableSelectRow(r) {
   border: 1px solid #d1d5db;
   border-radius: 6px;
 }
+.param-grid input:disabled {
+  background: #f3f4f6;
+  color: #9ca3af;
+}
 .signal-params {
   grid-template-columns: 1fr 1fr;
 }
 .check-label {
+  display: flex;
   flex-direction: row !important;
   align-items: center;
   gap: 8px !important;
+  font-size: 13px;
+  color: #374151;
+  margin: 0 0 8px;
 }
 .scatter-opt {
   margin-top: 10px;

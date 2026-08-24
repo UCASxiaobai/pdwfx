@@ -2,7 +2,9 @@
   <div class="df-match-panel">
     <p class="panel-desc">
       上传测向 CSV（PrcFf / PDW）与外源定位 CSV（Lq 雷情），按下方门限进行批级关联。
+      精细匹配要求短时差与连续持续指向；粗匹配加宽时差、按整批计票，适合钟差与稀疏定位点。
       匹配完成后，地图上已锁定批的定位点将与对应测向批同色显示；未关联点为灰色三角。
+      若已完成场景筛选且提供输出目录，测向批按换频链编批，并对定位目标做一对一互斥。
     </p>
 
     <div class="file-row">
@@ -20,6 +22,16 @@
 
     <details class="match-params" open>
       <summary>匹配超参数</summary>
+      <div class="mode-row">
+        <label class="mode-opt">
+          <input v-model="matchParams.mode" type="radio" value="fine" @change="onModeChange" />
+          精细匹配
+        </label>
+        <label class="mode-opt">
+          <input v-model="matchParams.mode" type="radio" value="coarse" @change="onModeChange" />
+          粗匹配
+        </label>
+      </div>
       <div class="param-grid">
         <label class="param-check">
           <span class="check-row">
@@ -33,16 +45,15 @@
           <input
             v-model.number="matchParams.timeThresholdSec"
             type="number"
-            step="0.5"
+            :step="matchParams.mode === 'coarse' ? 10 : 0.5"
             min="0.1"
+            max="600"
             :disabled="matchParams.ignoreTimeDimension"
             title="测向时刻与定位点允许的最大时差"
           />
-          <span class="field-hint">
-            {{ matchParams.ignoreTimeDimension ? "已忽略时差，本项不生效" : "单帧关联：定位须在测向时刻 ± 该值内" }}
-          </span>
+          <span class="field-hint">{{ timeWindowHint }}</span>
         </label>
-        <label>
+        <label v-if="matchParams.mode === 'fine'">
           批持续最短时间 (秒)
           <input
             v-model.number="matchParams.sustainDurationSec"
@@ -52,6 +63,17 @@
             title="同一测向批须持续指向同一目标的最短时间"
           />
           <span class="field-hint">批级锁定：窗内每条测向均须指向同一目标</span>
+        </label>
+        <label v-else>
+          指向次数
+          <input
+            v-model.number="matchParams.minHits"
+            type="number"
+            step="1"
+            min="1"
+            title="锁定所需指向同一目标的测向帧数"
+          />
+          <span class="field-hint">1 表示只要指向即匹配，不再要求连续持续</span>
         </label>
         <label>
           方位门限 (°)
@@ -105,27 +127,29 @@
         </thead>
         <tbody>
           <tr v-for="row in batchRows" :key="row.batchId">
-            <td>{{ row.batchId }}</td>
+            <td>{{ row.displayId }}</td>
             <td>{{ row.deviceId }}</td>
             <td>{{ row.targetId || "—" }}</td>
           </tr>
         </tbody>
       </table>
-      <p v-else class="empty">无批号通过持续性与几何门限</p>
+      <p v-else class="empty">无批号通过匹配门限</p>
     </section>
   </div>
 </template>
 
 <script setup>
 import { computed, reactive, ref, watch } from "vue";
-import { DEFAULT_DF_MATCH_PARAMS } from "../scene/dfMatchConfig.js";
+import { DEFAULT_DF_MATCH_PARAMS, paramsForDfMatchMode } from "../scene/dfMatchConfig.js";
 import { fetchDirectionFindingMatch } from "../scene/sceneApi.js";
 
 const emit = defineEmits(["match-result"]);
 
 const props = defineProps({
   /** 从工作流上传区传入的 CSV，用于一键填充测向/定位文件 */
-  uploadFiles: { type: Array, default: () => [] }
+  uploadFiles: { type: Array, default: () => [] },
+  /** 场景筛选输出目录；有 hop_batches.csv 时按换频编批 */
+  outputDir: { type: String, default: "" }
 });
 
 const matchParams = reactive({ ...DEFAULT_DF_MATCH_PARAMS });
@@ -139,19 +163,39 @@ let abortCtrl = null;
 
 const canRun = computed(() => Boolean(bearingFile.value && locateFile.value));
 
+const isCoarse = computed(() => matchParams.mode === "coarse");
+
+const timeWindowHint = computed(() => {
+  if (matchParams.ignoreTimeDimension) {
+    return "已忽略时差，本项不生效";
+  }
+  if (isCoarse.value) {
+    return "单帧关联：定位须在测向时刻 ± 该值内；可设至 600 秒（10 分钟）";
+  }
+  return "单帧关联：定位须在测向时刻 ± 该值内";
+});
+
 const batchRows = computed(() => {
   const r = result.value;
   if (!r?.batchToDevice) return [];
   const targetMap = r.batchToTargetId || {};
-  return Object.entries(r.batchToDevice).map(([batchId, deviceId]) => ({
-    batchId,
-    deviceId,
-    targetId: targetMap[batchId] || ""
-  }));
+  return Object.entries(r.batchToDevice).map(([batchId, deviceId]) => {
+    const label = (r.batchLabels || {})[batchId];
+    return {
+      batchId,
+      displayId: label ? `${label} / ${batchId}` : batchId,
+      deviceId,
+      targetId: targetMap[batchId] || ""
+    };
+  });
 });
 
 function resetParams() {
-  Object.assign(matchParams, DEFAULT_DF_MATCH_PARAMS);
+  Object.assign(matchParams, paramsForDfMatchMode(matchParams.mode || "fine"));
+}
+
+function onModeChange() {
+  Object.assign(matchParams, paramsForDfMatchMode(matchParams.mode));
 }
 
 function onBearingPick(ev) {
@@ -178,12 +222,12 @@ function guessFiles(files) {
       bearing = bearing || f;
     }
   }
-  if (!bearing && files.length === 1) bearing = files[0];
+  if (!bearing && files.length === 1 && !locate) bearing = files[0];
   if (!locate && files.length >= 2) {
     locate = files.find((f) => f !== bearing) || null;
   }
-  if (bearing && !bearingFile.value) bearingFile.value = bearing;
-  if (locate && !locateFile.value) locateFile.value = locate;
+  if (bearing) bearingFile.value = bearing;
+  if (locate) locateFile.value = locate;
 }
 
 watch(
@@ -203,7 +247,7 @@ async function runMatch() {
     result.value = await fetchDirectionFindingMatch(
       bearingFile.value,
       locateFile.value,
-      matchParams,
+      { ...matchParams, outputDir: props.outputDir || undefined },
       abortCtrl.signal
     );
     emit("match-result", result.value);
@@ -215,6 +259,14 @@ async function runMatch() {
     loading.value = false;
   }
 }
+
+async function runIfReady() {
+  if (!canRun.value || loading.value) return false;
+  await runMatch();
+  return true;
+}
+
+defineExpose({ runIfReady, runMatch });
 </script>
 
 <style scoped>
@@ -260,6 +312,23 @@ async function runMatch() {
   font-weight: 600;
   color: #374151;
   margin-bottom: 8px;
+}
+.mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+.mode-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #374151;
+  cursor: pointer;
+}
+.mode-opt input {
+  margin: 0;
 }
 .param-grid {
   display: grid;

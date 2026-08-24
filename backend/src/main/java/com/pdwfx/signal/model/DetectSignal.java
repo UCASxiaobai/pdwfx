@@ -92,6 +92,12 @@ public class DetectSignal {
     /** 场景建轨 track_id（轮询转发 CSV 的 track_id 列）；无则不按轨分目标 */
     private Integer sceneTrackId;
 
+    /**
+     * 源 CSV 行号（含表头：首条数据行为 2），与场景建轨 {@code DetectionPoint.rowIndex} 对齐，
+     * 供换频编批挂接测向点。
+     */
+    private Long sourceRowIndex;
+
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
     public String getDataFileId() { return dataFileId; }
@@ -140,4 +146,6 @@ public class DetectSignal {
     public void setClzt(String clzt) { this.clzt = clzt; }
     public Integer getSceneTrackId() { return sceneTrackId; }
     public void setSceneTrackId(Integer sceneTrackId) { this.sceneTrackId = sceneTrackId; }
+    public Long getSourceRowIndex() { return sourceRowIndex; }
+    public void setSourceRowIndex(Long sourceRowIndex) { this.sourceRowIndex = sourceRowIndex; }
 }

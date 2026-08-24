@@ -235,7 +235,7 @@ public class SceneFinderProperties {
 
     /**
      * 全段时间窗：每个频段只对 [minTime,maxTime] 评一次分，不做滑动窗。
-     * 流式封批分析应开启；事后主流程默认关闭。
+     * 流式与通信侦获主流程默认开启（application.yml）；单元测试构造的实例仍为 false。
      */
     private boolean fullSpanWindow = false;
 

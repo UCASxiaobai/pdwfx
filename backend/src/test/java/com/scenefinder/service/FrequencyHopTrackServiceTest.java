@@ -3,6 +3,8 @@ package com.scenefinder.service;
 import com.scenefinder.config.SceneFinderProperties;
 import com.scenefinder.model.BearingTrack;
 import com.scenefinder.model.DetectionPoint;
+import com.scenefinder.model.HopBatch;
+import com.scenefinder.model.HopBatchGrouping;
 import com.scenefinder.model.QualityScene;
 import com.scenefinder.model.TrackObservation;
 import org.junit.jupiter.api.Test;
@@ -107,6 +109,85 @@ class FrequencyHopTrackServiceTest {
         assertEquals(1, hops.size());
         assertEquals("AWACS", track.get("targetType"));
         assertEquals("预警机", track.get("targetTypeLabel"));
+    }
+
+    @Test
+    void hopBatchesMergeLinkedTracksAndKeepNoiseSingletons() {
+        SceneFinderProperties props = new SceneFinderProperties();
+        props.setEnableFreqHopAnalysis(true);
+        props.setAssociationGateDeg(8.0);
+        props.setMaxTrackBearingRateDegPerSec(30.0);
+        props.setFreqClusterGapMhz(0.01);
+        props.setHopMinPoints(3);
+        props.setHopMinSeconds(1.0);
+
+        Instant t0 = Instant.parse("2025-01-01T10:00:00Z");
+        List<DetectionPoint> points = new ArrayList<>();
+        BearingTrack trackA = fillTrack(1, t0, 5, 100.0, 287.625, points);
+        BearingTrack trackB = fillTrack(2, t0.plusSeconds(5), 5, 101.0, 300.125, points);
+        BearingTrack noise = fillTrack(99, t0.plusSeconds(50), 1, 200.0, 400.0, points);
+
+        QualityScene scene = QualityScene.trackScene(
+                1, t0, t0.plusSeconds(60), 287.625, 287.6, 287.65,
+                1, 10.0, 1, 5.0, 0.1, Collections.singletonList(1));
+        Map<Integer, BearingTrack> byId = new LinkedHashMap<>();
+        byId.put(1, trackA);
+        byId.put(2, trackB);
+        byId.put(99, noise);
+
+        FrequencyHopTrackService svc = new FrequencyHopTrackService();
+        HopBatchGrouping grouping = svc.buildHopBatches(
+                Collections.singletonList(scene), byId, points, props);
+        assertEquals(2, grouping.getBatches().size());
+        assertEquals(1, grouping.getNoiseSkippedCount());
+
+        HopBatch hop = null;
+        HopBatch leftover = null;
+        for (HopBatch b : grouping.getBatches()) {
+            if ("hop:1".equals(b.getBatchId())) {
+                hop = b;
+            } else if ("track:99".equals(b.getBatchId())) {
+                leftover = b;
+            }
+        }
+        assertTrue(hop != null);
+        assertTrue(leftover != null);
+        assertEquals("目标1", hop.getLabel());
+        assertTrue(hop.getLinkedTrackIds().contains(Integer.valueOf(1)));
+        assertTrue(hop.getLinkedTrackIds().contains(Integer.valueOf(2)));
+        assertEquals("单轨99", leftover.getLabel());
+    }
+
+    @Test
+    void hopBatchesAreNotCappedAtDisplayLimit() {
+        SceneFinderProperties props = new SceneFinderProperties();
+        props.setEnableFreqHopAnalysis(true);
+        props.setAssociationGateDeg(6.0);
+        props.setMaxTrackBearingRateDegPerSec(30.0);
+        props.setFreqClusterGapMhz(0.01);
+        props.setHopMinPoints(3);
+        props.setHopMinSeconds(1.0);
+        props.setHopLinkMaxGapSec(1.0);
+
+        Instant t0 = Instant.parse("2025-01-01T10:00:00Z");
+        List<DetectionPoint> points = new ArrayList<>();
+        Map<Integer, BearingTrack> byId = new LinkedHashMap<>();
+        for (int i = 1; i <= 42; i++) {
+            BearingTrack t = fillTrack(i, t0.plusSeconds(i * 30L), 5, 10.0 + i, 287.625 + i, points);
+            byId.put(Integer.valueOf(i), t);
+        }
+        QualityScene scene = QualityScene.trackScene(
+                1, t0, t0.plusSeconds(2000), 287.625, 200, 400,
+                1, 10.0, 1, 5.0, 0.1, Collections.singletonList(1));
+        FrequencyHopTrackService svc = new FrequencyHopTrackService();
+        HopBatchGrouping grouping = svc.buildHopBatches(
+                Collections.singletonList(scene), byId, points, props);
+        assertEquals(42, grouping.getBatches().size());
+        List<Map<String, Object>> views = svc.buildHoppingTrackViews(
+                Collections.singletonList(scene), byId, points, props, ZoneId.of("UTC"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> tracks = (List<Map<String, Object>>) views.get(0).get("tracks");
+        assertEquals(40, tracks.size());
     }
 
     @Test

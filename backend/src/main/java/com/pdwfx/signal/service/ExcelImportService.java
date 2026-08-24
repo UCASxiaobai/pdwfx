@@ -16,7 +16,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
@@ -68,7 +68,11 @@ public class ExcelImportService {
                 if (tableFormat && !NSignalTimeColumns.isValidSceneInput(row, headerIndex)) {
                     continue;
                 }
-                result.add(tableFormat ? mapTableRow(row, headerIndex, rowNum++) : mapStandardRow(row, headerIndex));
+                DetectSignal signal = tableFormat
+                        ? mapTableRow(row, headerIndex, rowNum++)
+                        : mapStandardRow(row, headerIndex);
+                signal.setSourceRowIndex(Long.valueOf(row.getRowNum() + 1L));
+                result.add(signal);
             }
             return result;
         }
@@ -96,34 +100,54 @@ public class ExcelImportService {
                 if (tableFormat && !NSignalTimeColumns.isValidSceneInput(row, headerIndex)) {
                     continue;
                 }
-                result.add(tableFormat ? mapTableRow(row, headerIndex, rowNum++) : mapStandardRow(row, headerIndex));
+                DetectSignal signal = tableFormat
+                        ? mapTableRow(row, headerIndex, rowNum++)
+                        : mapStandardRow(row, headerIndex);
+                signal.setSourceRowIndex(Long.valueOf(row.getRowNum() + 1L));
+                result.add(signal);
             }
             return result;
         }
     }
 
     private List<DetectSignal> parseCsv(MultipartFile file) throws IOException {
-        String charset = detectCsvCharset(file);
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(file.getInputStream(), charset));
-             CSVParser parser = CSVFormat.DEFAULT.builder().setHeader().setSkipHeaderRecord(true).build().parse(reader)) {
-            return parseCsvRecords(parser);
+        String fileName = file.getOriginalFilename() != null ? file.getOriginalFilename() : "upload.csv";
+        List<DetectSignal> utf8 = parseCsvWithCharset(file.getInputStream(), StandardCharsets.UTF_8, fileName, true);
+        if (utf8 != null) {
+            return utf8;
         }
+        return parseCsvWithCharset(file.getInputStream(), java.nio.charset.Charset.forName("GBK"), fileName, false);
     }
 
     private List<DetectSignal> parseCsvPath(Path path) throws IOException {
-        byte[] head = Files.readAllBytes(path);
-        int n = Math.min(head.length, 8192);
-        String charset = detectCsvCharset(head, n);
-        try (BufferedReader reader = Files.newBufferedReader(path, java.nio.charset.Charset.forName(charset));
+        String fileName = path.getFileName().toString();
+        List<DetectSignal> utf8 = parseCsvWithCharset(Files.newInputStream(path), StandardCharsets.UTF_8, fileName, true);
+        if (utf8 != null) {
+            return utf8;
+        }
+        return parseCsvWithCharset(Files.newInputStream(path), java.nio.charset.Charset.forName("GBK"), fileName, false);
+    }
+
+    private List<DetectSignal> parseCsvWithCharset(
+            InputStream in,
+            java.nio.charset.Charset charset,
+            String fileName,
+            boolean allowRetry
+    ) throws IOException {
+        try (BufferedReader reader = ImportFormatDetector.openReader(in, charset);
              CSVParser parser = CSVFormat.DEFAULT.builder().setHeader().setSkipHeaderRecord(true).build().parse(reader)) {
-            return parseCsvRecords(parser);
+            Map<String, Integer> headerIndex = toHeaderIndex(parser.getHeaderMap());
+            ImportFormat format = ImportFormatDetector.detect(headerIndex);
+            if (allowRetry && format == ImportFormat.UNKNOWN) {
+                return null;
+            }
+            return parseCsvRecords(parser, format, fileName);
         }
     }
 
-    private List<DetectSignal> parseCsvRecords(CSVParser parser) throws IOException {
-        Map<String, Integer> headerIndex = toHeaderIndex(parser.getHeaderMap());
-        ImportFormat format = ImportFormatDetector.detect(headerIndex);
-        validateSignalImportFormat(format, "upload.csv");
+    private List<DetectSignal> parseCsvRecords(CSVParser parser, ImportFormat format, String fileName)
+            throws IOException {
+        validateSignalImportFormat(format, fileName);
         boolean tableFormat = format == ImportFormat.PDW_TABLE;
         List<DetectSignal> result = new ArrayList<>();
         int rowNum = 1;
@@ -131,26 +155,11 @@ public class ExcelImportService {
             if (tableFormat && !NSignalTimeColumns.isValidSceneInput(record)) {
                 continue;
             }
-            result.add(tableFormat ? mapTableRecord(record, rowNum++) : mapStandardRecord(record));
+            DetectSignal signal = tableFormat ? mapTableRecord(record, rowNum++) : mapStandardRecord(record);
+            signal.setSourceRowIndex(Long.valueOf(record.getRecordNumber() + 1L));
+            result.add(signal);
         }
         return result;
-    }
-
-    private String detectCsvCharset(MultipartFile file) throws IOException {
-        byte[] head = new byte[8192];
-        int n;
-        try (InputStream in = file.getInputStream()) {
-            n = in.read(head);
-        }
-        return detectCsvCharset(head, n);
-    }
-
-    private String detectCsvCharset(byte[] head, int n) {
-        if (n <= 0) {
-            return "UTF-8";
-        }
-        String utf8 = new String(head, 0, n, java.nio.charset.StandardCharsets.UTF_8);
-        return utf8.contains("\uFFFD") ? "GBK" : "UTF-8";
     }
 
     private DetectSignal mapStandardRow(Row row, Map<String, Integer> headerIndex) {

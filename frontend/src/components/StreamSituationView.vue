@@ -6,6 +6,8 @@
         <p class="sub">
           TCP 收包 → 落盘切批 → 场景筛选/建轨 → 逐场景信号分析 → 预警机指挥网二次 → 标注。
           <a href="#/">返回主流程</a>
+          ·
+          <a href="#/ff-scatter">PrcFf 原始频率标绘</a>
         </p>
       </div>
       <div class="head-actions">

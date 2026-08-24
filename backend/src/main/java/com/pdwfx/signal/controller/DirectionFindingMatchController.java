@@ -39,7 +39,11 @@ public class DirectionFindingMatchController {
             @RequestParam(required = false) Double meanSquareBeforeSec,
             @RequestParam(required = false) Double meanSquareAfterSec,
             @RequestParam(required = false) Boolean enableBearingChangeFilter,
-            @RequestParam(required = false) Boolean ignoreTimeDimension
+            @RequestParam(required = false) Boolean ignoreTimeDimension,
+            @RequestParam(required = false) Boolean coarseMatch,
+            @RequestParam(required = false) Integer minHits,
+            @RequestParam(required = false) Boolean exclusiveAssign,
+            @RequestParam(required = false) String outputDir
     ) throws IOException {
         DirectionFindingMatcher.MatchConfig config = new DirectionFindingMatcher.MatchConfig();
         if (minFrames != null) config.minFrames = minFrames;
@@ -53,6 +57,9 @@ public class DirectionFindingMatchController {
         if (meanSquareAfterSec != null) config.meanSquareAfterSec = meanSquareAfterSec;
         if (enableBearingChangeFilter != null) config.enableBearingChangeFilter = enableBearingChangeFilter;
         if (ignoreTimeDimension != null) config.ignoreTimeDimension = ignoreTimeDimension;
-        return matchService.matchFiles(bearingFile, locateFile, config);
+        if (coarseMatch != null) config.coarseMatch = coarseMatch;
+        if (minHits != null) config.minHits = minHits;
+        if (exclusiveAssign != null) config.exclusiveAssign = exclusiveAssign;
+        return matchService.matchFiles(bearingFile, locateFile, config, outputDir);
     }
 }

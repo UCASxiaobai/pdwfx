@@ -29,8 +29,8 @@ public class AnalyzeOptions {
     /** 是否构建全量频段散点（importScatter），关闭可加快场景筛选 */
     private final Boolean enableImportScatter;
     /**
-     * 流式全段窗：每个频段只评 [minTime,maxTime] 一次，不做滑动窗。
-     * null 表示不覆盖配置默认值。
+     * 全段窗：每个频段只评 [minTime,maxTime] 一次，不做滑动窗。
+     * null 表示不覆盖配置默认值（application.yml 中与流式一致为 true）。
      */
     private final Boolean fullSpanWindow;
 

@@ -90,14 +90,14 @@
             未找到关联测向批；请先在「测向–定位关联」中执行匹配，且该目标已被锁定。
           </p>
           <p v-if="mapInspect.linkedBatchIds.length" class="map-inspect-meta">
-            关联批号：{{ mapInspect.linkedBatchIds.join("、") }}
+            关联批号：{{ mapInspect.linkedBatchIds.map(formatDfBatchLabel).join("、") }}
           </p>
           <p v-if="fixShowLinkedBearings && mapDisplayMode === 'static'" class="map-inspect-hint">
             地图已标绘上述批号的测向线（来自匹配结果）。
           </p>
         </template>
         <template v-else-if="mapInspect.kind === 'ray'">
-          <p class="map-inspect-line">测向批号：{{ mapInspect.batchId || "—" }}</p>
+          <p class="map-inspect-line">测向批号：{{ formatDfBatchLabel(mapInspect.batchId) }}</p>
           <p class="map-inspect-line">分析目标：{{ mapInspect.targetId || "—" }}</p>
           <p class="map-inspect-line">方位：{{ formatNum(mapInspect.azimuth) }}°</p>
           <p class="map-inspect-line">侦测时间：{{ formatDetectMs(mapInspect.timeMs) }}</p>
@@ -164,7 +164,7 @@
                 :key="idx"
                 :class="{ 'row-start': row.isStart, 'row-end': row.isEnd }"
               >
-                <td>{{ row.batchId || "—" }}</td>
+                <td>{{ formatDfBatchLabel(row.batchId) }}</td>
                 <td>
                   {{ formatDetectMs(row.timeMs) }}
                   <span v-if="row.isStart" class="time-tag start">起始</span>
@@ -1509,6 +1509,12 @@ function colorForBatch(batchId) {
     matchedDeviceColors.value,
     colors
   );
+}
+
+function formatDfBatchLabel(batchId) {
+  if (!batchId) return "—";
+  const label = props.dfMatchResult?.batchLabels?.[batchId];
+  return label ? `${label} / ${batchId}` : batchId;
 }
 
 /** 从测向–定位匹配结果绘制检视用测向线 */

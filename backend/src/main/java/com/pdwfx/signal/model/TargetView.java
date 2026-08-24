@@ -47,6 +47,8 @@ public class TargetView {
     private double priJitterPct;
     /** 主发送周期（毫秒） */
     private Double periodMs;
+    /** 同频对端补隙对主周期的说明；未调整时为 null */
+    private String periodAdjustNote;
     /** 周期稳定度 0~1，越高越稳定 */
     private double periodStability;
     /** 周期置信度 0~1 */
@@ -145,6 +147,8 @@ public class TargetView {
     public void setPriJitterPct(double priJitterPct) { this.priJitterPct = priJitterPct; }
     public Double getPeriodMs() { return periodMs; }
     public void setPeriodMs(Double periodMs) { this.periodMs = periodMs; }
+    public String getPeriodAdjustNote() { return periodAdjustNote; }
+    public void setPeriodAdjustNote(String periodAdjustNote) { this.periodAdjustNote = periodAdjustNote; }
     public double getPeriodStability() { return periodStability; }
     public void setPeriodStability(double periodStability) { this.periodStability = periodStability; }
     public double getPeriodConfidence() { return periodConfidence; }

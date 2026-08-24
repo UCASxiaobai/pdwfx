@@ -43,10 +43,12 @@ scene-finder:
   track-jump-split-gap-sec: 5.0
 
   # ---------- 场景评分（连续轨迹） ----------
-  # 滑动窗长度（秒）。full-span-window=true（流式默认）时不使用，只评本批全时段一次
+  # 滑动窗长度（秒）。full-span-window=true 时不使用，只评本批全时段一次
   window-seconds: 120.0
   # 滑动窗步进（秒）。越小候选越多、越慢；典型为 window-seconds 的 1/4
   window-step-seconds: 30.0
+  # 与流式态势一致：各频段对数据实际跨度评一次，不做滑动切分
+  full-span-window: true
   # 单个场景内至少需要的确认轨条数；少于此值该窗不输出
   min-tracks-in-scene: 1
   # 连续轨迹场景输出条数上限（与轮询分项配额，避免高分轮询占满）

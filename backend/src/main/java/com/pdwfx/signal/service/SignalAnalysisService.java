@@ -426,6 +426,7 @@ public class SignalAnalysisService {
                 targets.add(target);
                 roleContexts.add(new MasterSlaveAnalysisService.TargetContext(target, targetSignals));
         }
+        communicationRhythmService.adjustPeriodForPeerOccupancy(targets);
 
         // --- 识别-2：主从（委托 MasterSlaveAnalysisService，发射时间占比权重最高）---
         long netStart = networkSignals.stream().mapToLong(DetectSignal::getDetectTimesss).min().orElse(0L);
@@ -1016,6 +1017,9 @@ public class SignalAnalysisService {
                 target.getBurstDurationMeanMs(),
                 target.getAvgDutyCycle(),
                 target.getMaxDutyCycle()));
+        if (target.getPeriodAdjustNote() != null && !target.getPeriodAdjustNote().isEmpty()) {
+            aux.append("；").append(target.getPeriodAdjustNote());
+        }
 
         target.setTargetType(finalType);
         double targetConfidence = computeTargetConfidence(target, dutyPct, azStep, finalType);

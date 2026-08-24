@@ -5,6 +5,8 @@ import com.scenefinder.model.BearingMath;
 import com.scenefinder.model.BearingTrack;
 import com.scenefinder.model.DetectionPoint;
 import com.scenefinder.model.FrequencyBandUtils;
+import com.scenefinder.model.HopBatch;
+import com.scenefinder.model.HopBatchGrouping;
 import com.scenefinder.model.QualityScene;
 import com.scenefinder.model.TrackObservation;
 import org.springframework.stereotype.Service;
@@ -41,6 +43,7 @@ public class FrequencyHopTrackService {
 
     /**
      * 构建全批统一换频轨迹视图（列表至多 1 项）；关闭 {@code enableFreqHopAnalysis} 时返回空列表。
+     * 展示仍截断 {@link #MAX_DISPLAY_TARGETS}；匹配编批见 {@link #buildHopBatches}。
      */
     public List<Map<String, Object>> buildHoppingTrackViews(
             List<QualityScene> scenes,
@@ -49,11 +52,180 @@ public class FrequencyHopTrackService {
             SceneFinderProperties props,
             ZoneId zone
     ) {
+        HopBatchGrouping grouping = buildHopBatches(scenes, trackById, allPoints, props);
+        return toHoppingTrackViews(grouping, props, zone);
+    }
+
+    /**
+     * 换频链 + 未入链单轨编批。过噪声门的链为 {@code hop:{seedId}}，噪声/短轨为 {@code track:{id}}，
+     * 不受展示条数限制。
+     */
+    public HopBatchGrouping buildHopBatches(
+            List<QualityScene> scenes,
+            Map<Integer, BearingTrack> trackById,
+            List<DetectionPoint> allPoints,
+            SceneFinderProperties props
+    ) {
+        HopBatchGrouping grouping = new HopBatchGrouping();
         if (props == null || !props.isEnableFreqHopAnalysis()
                 || trackById == null || trackById.isEmpty()) {
-            return Collections.emptyList();
+            return grouping;
         }
 
+        Instant[] window = resolveAnalysisWindow(scenes, trackById, allPoints);
+        if (window == null) {
+            return grouping;
+        }
+        Instant w0 = window[0];
+        Instant w1 = window[1];
+        grouping.setWindowStart(w0);
+        grouping.setWindowEnd(w1);
+
+        List<BearingTrack> candidates = collectWindowTracks(trackById, w0, w1);
+        if (candidates.isEmpty()) {
+            return grouping;
+        }
+
+        Set<Integer> consumed = new HashSet<Integer>();
+        int hopTrackCount = 0;
+        int noiseSkipped = 0;
+        int displayIdx = 0;
+
+        for (BearingTrack seed : candidates) {
+            if (seed == null || consumed.contains(Integer.valueOf(seed.getId()))) {
+                continue;
+            }
+            HopChain chain = linkTracksFromSeed(seed, candidates, props, consumed);
+            if (chain.observations.isEmpty()) {
+                continue;
+            }
+            boolean noise = chain.hits < props.getHopMinPoints()
+                    || chain.durationSeconds() < props.getHopMinSeconds();
+            if (noise) {
+                noiseSkipped++;
+                for (BearingTrack t : chain.tracks) {
+                    grouping.add(singletonTrackBatch(t));
+                }
+                continue;
+            }
+            boolean hasHop = !chain.hops.isEmpty();
+            if (hasHop) {
+                hopTrackCount++;
+            }
+            displayIdx++;
+            grouping.add(hopChainBatch(seed, chain, "目标" + displayIdx, hasHop));
+        }
+        grouping.setNoiseSkippedCount(noiseSkipped);
+        grouping.setHopTrackCount(hopTrackCount);
+        return grouping;
+    }
+
+    List<Map<String, Object>> toHoppingTrackViews(
+            HopBatchGrouping grouping,
+            SceneFinderProperties props,
+            ZoneId zone
+    ) {
+        if (grouping == null || grouping.getWindowStart() == null || grouping.getWindowEnd() == null) {
+            return Collections.emptyList();
+        }
+        Instant w0 = grouping.getWindowStart();
+        Instant w1 = grouping.getWindowEnd();
+
+        List<Map<String, Object>> trackMaps = new ArrayList<Map<String, Object>>();
+        double yMin = Double.POSITIVE_INFINITY;
+        double yMax = Double.NEGATIVE_INFINITY;
+        int displayIdx = 0;
+        int hopTrackCount = 0;
+
+        for (HopBatch batch : grouping.getBatches()) {
+            if (batch == null || batch.isNoise() || batch.getBatchId() == null
+                    || !batch.getBatchId().startsWith("hop:")) {
+                continue;
+            }
+            displayIdx++;
+            if (batch.isHasFreqHop()) {
+                hopTrackCount++;
+            }
+            String color = COLORS[(displayIdx - 1) % COLORS.length];
+            Map<String, Object> tm = new LinkedHashMap<String, Object>();
+            tm.put("trackId", Integer.valueOf(batch.getSeedTrackId()));
+            tm.put("seedTrackId", Integer.valueOf(batch.getSeedTrackId()));
+            tm.put("linkedTrackIds", batch.getLinkedTrackIds());
+            tm.put("label", batch.getLabel());
+            tm.put("hopBatchId", batch.getBatchId());
+            tm.put("color", color);
+            tm.put("noiseCandidate", Boolean.FALSE);
+            tm.put("hasFreqHop", Boolean.valueOf(batch.isHasFreqHop()));
+            tm.put("hitCount", Integer.valueOf(batch.getHits()));
+            tm.put("durationSec", Double.valueOf(round2(batch.getDurationSeconds())));
+            tm.put("seedFreqMhz", Double.valueOf(round3(batch.getSeedFreqMhz())));
+            tm.put("freqMhz", Double.valueOf(round3(batch.getSeedFreqMhz())));
+            tm.put("meanBearing", Double.valueOf(round2(meanBearing(batch.getObservations()))));
+            tm.put("hops", batch.getHops());
+            if (batch.getPlatformType() != null) {
+                tm.put("targetType", batch.getPlatformType());
+                tm.put("targetTypeLabel", platformTypeLabel(batch.getPlatformType()));
+            }
+            if (batch.getPlatformTypes() != null && !batch.getPlatformTypes().isEmpty()) {
+                tm.put("targetTypes", batch.getPlatformTypes());
+            }
+            List<Map<String, Object>> bearingPts = new ArrayList<Map<String, Object>>();
+            if (batch.getObservations() != null) {
+                for (TrackObservation o : batch.getObservations()) {
+                    if (o == null || o.getTime() == null) {
+                        continue;
+                    }
+                    long x = o.getTime().toEpochMilli();
+                    double y = o.getBearingDeg();
+                    Map<String, Object> bp = new LinkedHashMap<String, Object>();
+                    bp.put("x", Long.valueOf(x));
+                    bp.put("y", Double.valueOf(round2(y)));
+                    bp.put("freqMhz", Double.valueOf(round3(o.getFrequencyMhz())));
+                    bearingPts.add(bp);
+                    yMin = Math.min(yMin, y);
+                    yMax = Math.max(yMax, y);
+                }
+            }
+            tm.put("points", bearingPts);
+            trackMaps.add(tm);
+            if (trackMaps.size() >= MAX_DISPLAY_TARGETS) {
+                break;
+            }
+        }
+
+        if (trackMaps.isEmpty()) {
+            return Collections.emptyList();
+        }
+        if (!Double.isFinite(yMin)) {
+            yMin = 0;
+            yMax = 360;
+        }
+        double padY = Math.max(2.0, (yMax - yMin) * 0.08);
+
+        Map<String, Object> view = new LinkedHashMap<String, Object>();
+        view.put("unified", Boolean.TRUE);
+        view.put("sceneRank", null);
+        view.put("title", "换频研判（本批全部有效检测建轨后融合 · 不按场景拆分）");
+        view.put("timeRange", formatRange(w0, w1, zone));
+        view.put("xMin", Long.valueOf(w0.toEpochMilli()));
+        view.put("xMax", Long.valueOf(w1.toEpochMilli()));
+        view.put("yMin", Double.valueOf(round2(yMin - padY)));
+        view.put("yMax", Double.valueOf(round2(yMax + padY)));
+        view.put("trackCount", Integer.valueOf(trackMaps.size()));
+        view.put("hopTrackCount", Integer.valueOf(hopTrackCount));
+        view.put("noiseSkippedCount", Integer.valueOf(grouping.getNoiseSkippedCount()));
+        view.put("note", String.format(Locale.ROOT,
+                "本批全部有效检测一张图（不按场景拆分）；仅轨间衔接处标记换频；短于 %d 点或 %.0fs 的链视为噪声并隐藏。",
+                props.getHopMinPoints(), props.getHopMinSeconds()));
+        view.put("tracks", trackMaps);
+        return Collections.singletonList(view);
+    }
+
+    private Instant[] resolveAnalysisWindow(
+            List<QualityScene> scenes,
+            Map<Integer, BearingTrack> trackById,
+            List<DetectionPoint> allPoints
+    ) {
         Instant w0 = null;
         Instant w1 = null;
         if (allPoints != null) {
@@ -103,10 +275,17 @@ public class FrequencyHopTrackService {
             }
         }
         if (w0 == null || w1 == null) {
-            return Collections.emptyList();
+            return null;
         }
+        return new Instant[]{w0, w1};
+    }
 
-        List<BearingTrack> candidates = new ArrayList<>();
+    private List<BearingTrack> collectWindowTracks(
+            Map<Integer, BearingTrack> trackById,
+            Instant w0,
+            Instant w1
+    ) {
+        List<BearingTrack> candidates = new ArrayList<BearingTrack>();
         for (BearingTrack t : trackById.values()) {
             if (t == null || t.getObservations().isEmpty()) {
                 continue;
@@ -120,9 +299,6 @@ public class FrequencyHopTrackService {
                 continue;
             }
             candidates.add(t);
-        }
-        if (candidates.isEmpty()) {
-            return Collections.emptyList();
         }
         Collections.sort(candidates, new Comparator<BearingTrack>() {
             @Override
@@ -142,176 +318,58 @@ public class FrequencyHopTrackService {
                 return c != 0 ? c : Integer.compare(a.getId(), b.getId());
             }
         });
+        return candidates;
+    }
 
-        Set<Integer> consumed = new HashSet<>();
-        List<Map<String, Object>> trackMaps = new ArrayList<>();
-        int hopTrackCount = 0;
-        int noiseSkipped = 0;
-        double yMin = Double.POSITIVE_INFINITY;
-        double yMax = Double.NEGATIVE_INFINITY;
-        int displayIdx = 0;
+    private static HopBatch hopChainBatch(BearingTrack seed, HopChain chain, String label, boolean hasHop) {
+        HopBatch batch = new HopBatch();
+        batch.setBatchId("hop:" + seed.getId());
+        batch.setLabel(label);
+        batch.setSeedTrackId(seed.getId());
+        batch.setLinkedTrackIds(chain.linkedTrackIds);
+        batch.setNoise(false);
+        batch.setHasFreqHop(hasHop);
+        batch.setHits(chain.hits);
+        batch.setDurationSeconds(chain.durationSeconds());
+        batch.setSeedFreqMhz(FrequencyBandUtils.dominantFrequencyMhz(seed));
+        batch.setPlatformType(chain.platformType);
+        batch.setPlatformTypes(chain.platformTypes);
+        batch.setHops(chain.hops);
+        batch.setObservations(chain.observations);
+        return batch;
+    }
 
-        for (BearingTrack seed : candidates) {
-            if (seed == null || consumed.contains(seed.getId())) {
-                continue;
-            }
-            HopChain chain = linkTracksFromSeed(seed, candidates, props, consumed);
-            if (chain.observations.isEmpty()) {
-                continue;
-            }
-            boolean noise = chain.hits < props.getHopMinPoints()
-                    || chain.durationSeconds() < props.getHopMinSeconds();
-            if (noise) {
-                noiseSkipped++;
-                continue;
-            }
-            boolean hasHop = !chain.hops.isEmpty();
-            if (hasHop) {
-                hopTrackCount++;
-            }
-
-            displayIdx++;
-            String color = COLORS[(displayIdx - 1) % COLORS.length];
-            Map<String, Object> tm = new LinkedHashMap<>();
-            tm.put("trackId", seed.getId());
-            tm.put("seedTrackId", seed.getId());
-            tm.put("linkedTrackIds", chain.linkedTrackIds);
-            tm.put("label", "目标" + displayIdx);
-            tm.put("color", color);
-            tm.put("noiseCandidate", false);
-            tm.put("hasFreqHop", hasHop);
-            tm.put("hitCount", chain.hits);
-            tm.put("durationSec", round2(chain.durationSeconds()));
-            tm.put("seedFreqMhz", round3(FrequencyBandUtils.dominantFrequencyMhz(seed)));
-            tm.put("freqMhz", round3(FrequencyBandUtils.dominantFrequencyMhz(seed)));
-            tm.put("meanBearing", round2(meanBearing(chain.observations)));
-            tm.put("hops", chain.hops);
-            if (chain.platformType != null) {
-                tm.put("targetType", chain.platformType);
-                tm.put("targetTypeLabel", platformTypeLabel(chain.platformType));
-            }
-            if (chain.platformTypes != null && !chain.platformTypes.isEmpty()) {
-                tm.put("targetTypes", chain.platformTypes);
-            }
-            List<Map<String, Object>> bearingPts = new ArrayList<>();
-            for (TrackObservation o : chain.observations) {
-                long x = o.getTime().toEpochMilli();
-                double y = o.getBearingDeg();
-                Map<String, Object> bp = new LinkedHashMap<>();
-                bp.put("x", x);
-                bp.put("y", round2(y));
-                bp.put("freqMhz", round3(o.getFrequencyMhz()));
-                bearingPts.add(bp);
-                yMin = Math.min(yMin, y);
-                yMax = Math.max(yMax, y);
-            }
-            tm.put("points", bearingPts);
-            trackMaps.add(tm);
-            if (trackMaps.size() >= MAX_DISPLAY_TARGETS) {
-                break;
-            }
-        }
-
-        if (trackMaps.isEmpty()) {
-            return Collections.emptyList();
-        }
-        if (!Double.isFinite(yMin)) {
-            yMin = 0;
-            yMax = 360;
-        }
-        double padY = Math.max(2.0, (yMax - yMin) * 0.08);
-
-        Map<String, Object> view = new LinkedHashMap<>();
-        view.put("unified", true);
-        view.put("sceneRank", null);
-        view.put("title", "换频研判（本批全部有效检测建轨后融合 · 不按场景拆分）");
-        view.put("timeRange", formatRange(w0, w1, zone));
-        view.put("xMin", w0.toEpochMilli());
-        view.put("xMax", w1.toEpochMilli());
-        view.put("yMin", round2(yMin - padY));
-        view.put("yMax", round2(yMax + padY));
-        view.put("trackCount", trackMaps.size());
-        view.put("hopTrackCount", hopTrackCount);
-        view.put("noiseSkippedCount", noiseSkipped);
-        view.put("note", String.format(Locale.ROOT,
-                "本批全部有效检测一张图（不按场景拆分）；仅轨间衔接处标记换频；短于 %d 点或 %.0fs 的链视为噪声并隐藏。",
-                props.getHopMinPoints(), props.getHopMinSeconds()));
-        view.put("tracks", trackMaps);
-
-        // #region agent log
-        try {
-            java.util.Set<Double> sceneFreqs = new java.util.HashSet<>();
-            if (scenes != null) {
-                for (QualityScene sc : scenes) {
-                    if (sc != null) {
-                        sceneFreqs.add(Double.valueOf(round3(sc.getFreqCenterMhz())));
-                    }
+    private static HopBatch singletonTrackBatch(BearingTrack track) {
+        List<TrackObservation> obs = new ArrayList<TrackObservation>();
+        if (track.getObservations() != null) {
+            for (TrackObservation o : track.getObservations()) {
+                if (o != null && o.getTime() != null) {
+                    obs.add(o);
                 }
             }
-            java.util.List<Map<String, Object>> hopGaps = new ArrayList<>();
-            for (Map<String, Object> tm : trackMaps) {
-                @SuppressWarnings("unchecked")
-                List<Map<String, Object>> hops = (List<Map<String, Object>>) tm.get("hops");
-                if (hops == null) {
-                    continue;
-                }
-                for (Map<String, Object> h : hops) {
-                    double toF = h.get("toFreqMhz") instanceof Number
-                            ? ((Number) h.get("toFreqMhz")).doubleValue() : Double.NaN;
-                    double fromF = h.get("fromFreqMhz") instanceof Number
-                            ? ((Number) h.get("fromFreqMhz")).doubleValue() : Double.NaN;
-                    boolean toInScene = false;
-                    boolean fromInScene = false;
-                    for (Double sf : sceneFreqs) {
-                        if (sf == null) {
-                            continue;
-                        }
-                        if (Math.abs(sf.doubleValue() - toF) <= 0.01) {
-                            toInScene = true;
-                        }
-                        if (Math.abs(sf.doubleValue() - fromF) <= 0.01) {
-                            fromInScene = true;
-                        }
-                    }
-                    if (!toInScene || !fromInScene
-                            || Math.abs(toF - 460.625) <= 0.01
-                            || Math.abs(fromF - 246.075) <= 0.01) {
-                        Map<String, Object> row = new LinkedHashMap<>();
-                        row.put("label", tm.get("label"));
-                        row.put("linkedTrackIds", tm.get("linkedTrackIds"));
-                        row.put("fromFreqMhz", h.get("fromFreqMhz"));
-                        row.put("toFreqMhz", h.get("toFreqMhz"));
-                        row.put("fromTrackId", h.get("fromTrackId"));
-                        row.put("toTrackId", h.get("toTrackId"));
-                        row.put("fromInSelectedScenes", Boolean.valueOf(fromInScene));
-                        row.put("toInSelectedScenes", Boolean.valueOf(toInScene));
-                        hopGaps.add(row);
-                    }
-                }
-            }
-            Map<String, Object> payload = new LinkedHashMap<>();
-            payload.put("sessionId", "0cb39e");
-            payload.put("runId", "pre-fix");
-            payload.put("hypothesisId", "A,C");
-            payload.put("location", "FrequencyHopTrackService.java:buildHoppingTrackViews");
-            payload.put("message", "hop links vs selected scene freqs");
-            payload.put("timestamp", Long.valueOf(System.currentTimeMillis()));
-            Map<String, Object> data = new LinkedHashMap<>();
-            data.put("selectedSceneCount", Integer.valueOf(sceneFreqs.size()));
-            data.put("selectedSceneFreqs", new ArrayList<>(sceneFreqs));
-            data.put("hopGapOrInterest", hopGaps);
-            data.put("hopTrackCount", Integer.valueOf(hopTrackCount));
-            payload.put("data", data);
-            String line = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(payload) + "\n";
-            java.nio.file.Path logPath = java.nio.file.Paths.get("D:/Documents/Code/Java/pdwfx/debug-0cb39e.log");
-            java.nio.file.Files.write(logPath, line.getBytes(java.nio.charset.StandardCharsets.UTF_8),
-                    java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
-        } catch (Exception ignored) {
-            // debug only
         }
-        // #endregion
+        HopBatch batch = new HopBatch();
+        batch.setBatchId("track:" + track.getId());
+        batch.setLabel("单轨" + track.getId());
+        batch.setSeedTrackId(track.getId());
+        batch.setLinkedTrackIds(Collections.singletonList(Integer.valueOf(track.getId())));
+        batch.setNoise(true);
+        batch.setHasFreqHop(false);
+        batch.setHits(obs.size());
+        batch.setDurationSeconds(durationSeconds(obs));
+        batch.setSeedFreqMhz(FrequencyBandUtils.dominantFrequencyMhz(track));
+        batch.setPlatformType(track.getSuggestedPlatformType());
+        batch.setObservations(obs);
+        return batch;
+    }
 
-        return Collections.singletonList(view);
+    private static double durationSeconds(List<TrackObservation> observations) {
+        if (observations == null || observations.size() < 2) {
+            return 0;
+        }
+        long t0 = observations.get(0).getTime().toEpochMilli();
+        long t1 = observations.get(observations.size() - 1).getTime().toEpochMilli();
+        return Math.max(0, (t1 - t0) / 1000.0);
     }
 
     private HopChain linkTracksFromSeed(
@@ -375,6 +433,7 @@ public class FrequencyHopTrackService {
         }
 
         HopChain chain = new HopChain();
+        chain.tracks = chainTracks;
         chain.observations = merged;
         chain.hits = merged.size();
         chain.hops = hops;
@@ -611,6 +670,7 @@ public class FrequencyHopTrackService {
     }
 
     private static final class HopChain {
+        private List<BearingTrack> tracks = Collections.emptyList();
         private List<TrackObservation> observations = Collections.emptyList();
         private int hits;
         private List<Map<String, Object>> hops = Collections.emptyList();

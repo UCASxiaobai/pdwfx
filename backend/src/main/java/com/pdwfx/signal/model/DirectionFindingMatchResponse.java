@@ -19,6 +19,8 @@ public class DirectionFindingMatchResponse {
     private int trajectoryDeviceCount;
     private int matchedPointCount;
     private DirectionFindingMatcher.MatchConfig config;
+    /** 测向批 → 展示名（如 目标1）；无换频编批时为空 */
+    private Map<String, String> batchLabels = new LinkedHashMap<>();
 
     public Map<String, String> getBatchToDevice() { return batchToDevice; }
     public void setBatchToDevice(Map<String, String> batchToDevice) {
@@ -46,6 +48,10 @@ public class DirectionFindingMatchResponse {
     public void setMatchedPointCount(int matchedPointCount) { this.matchedPointCount = matchedPointCount; }
     public DirectionFindingMatcher.MatchConfig getConfig() { return config; }
     public void setConfig(DirectionFindingMatcher.MatchConfig config) { this.config = config; }
+    public Map<String, String> getBatchLabels() { return batchLabels; }
+    public void setBatchLabels(Map<String, String> batchLabels) {
+        this.batchLabels = batchLabels != null ? batchLabels : new LinkedHashMap<>();
+    }
 
     public static class MatchedDfPoint {
         private String batchId;

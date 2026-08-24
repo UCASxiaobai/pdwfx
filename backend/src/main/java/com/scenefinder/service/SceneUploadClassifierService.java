@@ -70,7 +70,11 @@ public class SceneUploadClassifierService {
 
         if (pdwFiles.isEmpty()) {
             throw new ImportFormatException(
-                    "未找到 PDW 侦获 CSV。外源定位文件（如雷情导入）不能单独用于场景筛选，请与 PDW 数据一并上传。",
+                    "未找到 PDW 侦获 CSV（需含 pl、xhfw、zcsj）。当前上传文件均为外源定位表（detectTime、longitude、latitude）："
+                            + csvFiles.stream()
+                            .map(p -> p.getFileName().toString())
+                            .collect(Collectors.joining("、"))
+                            + "。场景筛选必须同时包含测向/侦获表。",
                     ImportFormat.EXTERNAL_TARGET_LOCATE,
                     externalFiles.isEmpty() ? null : externalFiles.get(0).getFileName().toString()
             );

@@ -5,6 +5,7 @@ import com.scenefinder.model.AwacsOccupancyWindow;
 import com.scenefinder.model.BearingTrack;
 import com.scenefinder.model.DetectionPoint;
 import com.scenefinder.model.FrequencyBandUtils;
+import com.scenefinder.model.HopBatchGrouping;
 import com.scenefinder.model.OccupancyCluster;
 import com.scenefinder.model.QualityScene;
 import com.scenefinder.model.SceneFinderResult;
@@ -262,10 +263,15 @@ public class SceneFinderService {
                 effective.getFrameSeconds(),
                 maxScatter,
                 effective.isEnableImportScatter());
+        HopBatchGrouping hopBatches = frequencyHopTrackService.buildHopBatches(
+                scenes, trackById, points, effective);
         visualization.put(
                 "hoppingTrackViews",
-                frequencyHopTrackService.buildHoppingTrackViews(
-                        scenes, trackById, points, effective, zone));
+                frequencyHopTrackService.toHoppingTrackViews(hopBatches, effective, zone));
+        String hopBatchFile = HopBatchIndex.writeCsv(outputDir, hopBatches);
+        if (hopBatchFile != null) {
+            exportedFiles.add(hopBatchFile);
+        }
         exportedFiles.add(visualizationService.exportHtml(outputDir, visualization));
         exportedFiles.add(visualizationService.exportJson(outputDir, visualization));
 

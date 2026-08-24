@@ -3,6 +3,7 @@ package com.pdwfx.signal.service;
 import com.pdwfx.signal.model.DetectSignal;
 import com.pdwfx.signal.model.ExternalTargetFix;
 import com.scenefinder.service.DirectionFindingMatcher;
+import com.scenefinder.service.HopBatchIndex;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -23,6 +24,7 @@ public final class DirectionFindingMatchBridge {
      * 雷情点 → 设备航迹。
      * <ul>
      *   <li>deviceId（航迹批号）优先 {@code targetName(mbmc)}，其次 {@code targetId(mbnm)}</li>
+     *   <li>两者皆空的点不参与匹配（避免锁到 CSV 行号 {@code ROW-n}）</li>
      *   <li>mbnm 单独保留在 {@link #buildTargetIdIndex(List)} 供反查</li>
      * </ul>
      */
@@ -47,6 +49,50 @@ public final class DirectionFindingMatchBridge {
                     fix.getLatitude()
             ));
         }
+        // #region agent log
+        try {
+            int rowDevices = 0;
+            int namedDevices = 0;
+            java.util.List<String> rowSamples = new java.util.ArrayList<String>();
+            java.util.List<String> namedSamples = new java.util.ArrayList<String>();
+            for (String id : map.keySet()) {
+                if (id != null && id.startsWith("ROW-")) {
+                    rowDevices++;
+                    if (rowSamples.size() < 8) {
+                        rowSamples.add(id + ":pts=" + map.get(id).trackPoints.size());
+                    }
+                } else {
+                    namedDevices++;
+                    if (namedSamples.size() < 8) {
+                        namedSamples.add(id + ":pts=" + map.get(id).trackPoints.size());
+                    }
+                }
+            }
+            java.util.Map<String, Object> data = new java.util.LinkedHashMap<String, Object>();
+            data.put("fixCount", Integer.valueOf(fixes.size()));
+            data.put("uniqueDevices", Integer.valueOf(map.size()));
+            data.put("rowPrefixedDevices", Integer.valueOf(rowDevices));
+            data.put("namedOrIdDevices", Integer.valueOf(namedDevices));
+            data.put("rowSamples", rowSamples);
+            data.put("namedSamples", namedSamples);
+            java.util.Map<String, Object> payload = new java.util.LinkedHashMap<String, Object>();
+            payload.put("sessionId", "b9c0b8");
+            payload.put("runId", "pre-fix");
+            payload.put("hypothesisId", "A,D,E");
+            payload.put("location", "DirectionFindingMatchBridge.java:buildTrajectories");
+            payload.put("message", "trajectory deviceId grouping");
+            payload.put("timestamp", Long.valueOf(System.currentTimeMillis()));
+            payload.put("data", data);
+            String line = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(payload) + "\n";
+            java.nio.file.Files.write(
+                    java.nio.file.Paths.get("D:/Documents/Code/Java/pdwfx/debug-b9c0b8.log"),
+                    line.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    java.nio.file.StandardOpenOption.CREATE,
+                    java.nio.file.StandardOpenOption.APPEND);
+        } catch (Exception ignored) {
+            // debug only
+        }
+        // #endregion
         return map;
     }
 
@@ -69,8 +115,16 @@ public final class DirectionFindingMatchBridge {
     /**
      * PDW 侦获 → 测向 Measurement。
      * batchId 缺省按 {@code locPlatId + freq} 分组；仍无则 {@code freq:{Hz}}。
+     * 提供换频编批索引时，用 {@code hop:{seedId}} / {@code track:{id}} 覆盖按频批号。
      */
     public static List<DirectionFindingMatcher.Measurement> buildMeasurements(List<DetectSignal> signals) {
+        return buildMeasurements(signals, null);
+    }
+
+    public static List<DirectionFindingMatcher.Measurement> buildMeasurements(
+            List<DetectSignal> signals,
+            HopBatchIndex hopIndex
+    ) {
         List<DirectionFindingMatcher.Measurement> list = new ArrayList<>();
         if (signals == null) {
             return list;
@@ -81,16 +135,12 @@ public final class DirectionFindingMatchBridge {
             if (rxLon == null || rxLat == null) {
                 continue;
             }
-            long timeMs = s.getDetectTimesss() > 0
-                    ? s.getDetectTimesss()
-                    : (s.getDetectTime() != null
-                    ? s.getDetectTime().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
-                    : 0L);
+            long timeMs = detectTimeMs(s);
             if (timeMs <= 0) {
                 continue;
             }
             int freqHz = (int) Math.round(s.getFreq() * 1_000_000);
-            String batchId = resolveBatchId(s);
+            String batchId = resolveBatchId(s, hopIndex, timeMs);
             DirectionFindingMatcher.Measurement m = new DirectionFindingMatcher.Measurement(
                     timeMs,
                     rxLon,
@@ -118,12 +168,52 @@ public final class DirectionFindingMatchBridge {
             return id;
         }
         if (fix.getRowNum() > 0) {
-            return "ROW-" + fix.getRowNum();
+            // #region agent log
+            try {
+                if (fix.getRowNum() % 2000 == 0) {
+                    java.util.Map<String, Object> data = new java.util.LinkedHashMap<String, Object>();
+                    data.put("rowNum", Integer.valueOf(fix.getRowNum()));
+                    data.put("targetName", fix.getTargetName());
+                    data.put("targetId", fix.getTargetId());
+                    data.put("targetTypeName", fix.getTargetTypeName());
+                    data.put("modelCode", fix.getModelCode());
+                    java.util.Map<String, Object> payload = new java.util.LinkedHashMap<String, Object>();
+                    payload.put("sessionId", "b9c0b8");
+                    payload.put("runId", "pre-fix");
+                    payload.put("hypothesisId", "A,C");
+                    payload.put("location", "DirectionFindingMatchBridge.java:resolveDeviceId");
+                    payload.put("message", "ROW fallback");
+                    payload.put("timestamp", Long.valueOf(System.currentTimeMillis()));
+                    payload.put("data", data);
+                    String line = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(payload) + "\n";
+                    java.nio.file.Files.write(
+                            java.nio.file.Paths.get("D:/Documents/Code/Java/pdwfx/debug-b9c0b8.log"),
+                            line.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                            java.nio.file.StandardOpenOption.CREATE,
+                            java.nio.file.StandardOpenOption.APPEND);
+                }
+            } catch (Exception ignored) {
+                // debug only
+            }
+            // #endregion
         }
         return null;
     }
 
     public static String resolveBatchId(DetectSignal s) {
+        return resolveBatchId(s, null, detectTimeMs(s));
+    }
+
+    public static String resolveBatchId(DetectSignal s, HopBatchIndex hopIndex, long timeMs) {
+        if (hopIndex != null && hopIndex.isPresent() && s != null) {
+            String hopId = hopIndex.resolve(s.getSourceRowIndex(), timeMs, s.getFreq(), s.getAzimuth());
+            if (hopId != null && !hopId.trim().isEmpty()) {
+                return hopId;
+            }
+        }
+        if (s == null) {
+            return null;
+        }
         String plat = blankToNull(s.getLocPlatId());
         if (plat != null && s.getFreq() > 0) {
             return plat + "@" + formatFreqMhz(s.getFreq());
@@ -132,6 +222,19 @@ public final class DirectionFindingMatchBridge {
             return plat;
         }
         return null;
+    }
+
+    private static long detectTimeMs(DetectSignal s) {
+        if (s == null) {
+            return 0L;
+        }
+        if (s.getDetectTimesss() > 0) {
+            return s.getDetectTimesss();
+        }
+        if (s.getDetectTime() != null) {
+            return s.getDetectTime().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli();
+        }
+        return 0L;
     }
 
     private static String formatFreqMhz(double freqMhz) {

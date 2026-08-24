@@ -22,8 +22,13 @@ export async function analyzeScenesUpload(files, params, signal) {
   appendOptional(fd, "freqMin", params.freqMin);
   appendOptional(fd, "freqMax", params.freqMax);
   appendOptional(fd, "freqTolerance", params.freqTolerance);
-  appendOptional(fd, "windowSeconds", params.windowSeconds);
-  appendOptional(fd, "windowStepSeconds", params.windowStepSeconds);
+  if (params.fullSpanWindow) {
+    fd.append("fullSpanWindow", "true");
+  } else {
+    fd.append("fullSpanWindow", "false");
+    appendOptional(fd, "windowSeconds", params.windowSeconds);
+    appendOptional(fd, "windowStepSeconds", params.windowStepSeconds);
+  }
   appendOptional(fd, "minTracksInScene", params.minTracksInScene);
   appendOptional(fd, "topKScenes", params.topKScenes);
   appendOptional(fd, "topKTrackScenes", params.topKTrackScenes);
