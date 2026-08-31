@@ -1,47 +1,48 @@
+<!-- vue2-done -->
 <template>
   <div class="scene-workflow">
-    <header class="workflow-header">
-      <h2>通信侦获信号分析系统</h2>
+    <ThemePanel title="数据上传" :label-index="1">
       <p class="subtitle">
         原始 CSV → 场景筛选（默认全段窗，与流式态势相同） → 场景数据作为信号分析输入 → 综合报表与网络研判
       </p>
-      <ol class="steps">
+      <ol class="cet36-steps">
         <li :class="{ done: pickedFiles.length }">上传数据</li>
         <li :class="{ done: sceneResult }">场景筛选</li>
         <li :class="{ done: forwardResult }">信号分析</li>
-        <li :class="{ done: report?.rows?.length }">结果查看</li>
+        <li :class="{ done: report && report.rows && report.rows.length }">结果查看</li>
       </ol>
-    </header>
-
-    <section class="step-card">
-      <h3>① 数据上传</h3>
       <div class="upload-row">
-        <label class="upload-btn">
-          上传文件
-          <input type="file" accept=".csv" multiple hidden @change="onPickFiles" />
-        </label>
-        <button type="button" class="text-btn" :disabled="!pickedFiles.length" @click="clearAll">
+        <el-button type="primary" @click.native="openFilePicker">上传文件</el-button>
+        <input
+          ref="fileInput"
+          class="upload-input"
+          type="file"
+          accept=".csv"
+          multiple
+          @change="onPickFiles"
+        />
+        <el-button type="text" :disabled="!pickedFiles.length" @click="clearAll">
           清空
-        </button>
+        </el-button>
       </div>
       <ul v-if="pickedFiles.length" class="file-list">
         <li v-for="(f, i) in pickedFiles" :key="i">{{ f.name }}</li>
       </ul>
-      <p v-else class="hint">支持一次选择多个 CSV：PDW 侦获数据 + 可选外源定位（如雷情导入 Lq1139，含 detectTime/longitude/latitude）</p>
+      <p v-else class="cet36-hint">
+        支持一次选择多个 CSV：PDW 侦获数据 + 可选外源定位（如雷情导入 Lq1139，含 detectTime/longitude/latitude）
+      </p>
       <label class="check-label scatter-opt">
         <input v-model="params.enableImportScatter" type="checkbox" />
         生成全量数据概览散点（需预筛全量数据，较慢）
       </label>
-      <button
+      <el-button
         v-if="pickedFiles.length && params.enableImportScatter"
-        type="button"
-        class="secondary-btn scatter-btn"
         :disabled="importVizLoading || pipelineRunning"
         @click="runSceneScreeningForViz"
       >
         {{ importVizLoading ? "生成中…" : "生成全量概览" }}
-      </button>
-    </section>
+      </el-button>
+    </ThemePanel>
 
     <ImportDataScatterViz
       v-if="params.enableImportScatter && (importScatter || importVizLoading || importVizError)"
@@ -50,8 +51,7 @@
       :error="importVizError"
     />
 
-    <section class="step-card">
-      <h3>② 场景筛选参数</h3>
+    <ThemePanel title="场景筛选参数" :label-index="2">
       <label class="check-label">
         <input v-model="params.fullSpanWindow" type="checkbox" />
         全段时间窗（与流式态势一致：各频段按整段跨度评一次，不做滑动切分）
@@ -85,10 +85,9 @@
         <label>TOP-K 轮询场景 <input v-model.number="params.topKPollingScenes" type="number" min="1" /></label>
         <label>输出目录 <input v-model.trim="params.outputDir" type="text" /></label>
       </div>
-    </section>
+    </ThemePanel>
 
-    <section class="step-card">
-      <h3>③ 信号分析参数</h3>
+    <ThemePanel title="信号分析参数" :label-index="3">
       <div class="param-grid signal-params">
         <label>
           频率容差 (MHz)
@@ -103,397 +102,461 @@
           场景较多时建议取消勾选，先快速看汇总表；点击「图表」再按需加载单网详情。
         </p>
       </div>
-    </section>
-
-    <section class="step-card">
-      <h3>测向–定位关联</h3>
-      <SceneDfMatchPanel
-        ref="dfMatchPanel"
-        :upload-files="pickedFiles"
-        :output-dir="sceneResult?.outputDir || params.outputDir || ''"
-        @match-result="dfMatchResult = $event"
-      />
-    </section>
-
-    <section class="step-card actions">
-      <button
-        type="button"
-        class="primary"
-        :disabled="!pickedFiles.length || pipelineRunning"
-        @click="runFullPipeline"
-      >
-        {{ pipelineRunning ? "处理中…" : "开始分析（场景筛选 → 信号分析）" }}
-      </button>
-      <span v-if="statusMsg" class="status">{{ statusMsg }}</span>
-      <span v-if="errorMsg" class="error">{{ errorMsg }}</span>
-    </section>
-
-    <section v-if="sceneResult?.scenes?.length" class="step-card">
-      <h3>优质场景（将导出 CSV 并送入信号分析）</h3>
-      <p class="meta">
-        检测 {{ sceneResult.totalDetections }} 条 · 轨迹 {{ sceneResult.confirmedTracks }} 条 ·
-        {{ sceneResult.scenes.length }} 个场景
-      </p>
-      <div class="scene-chips">
-        <label
-          v-for="s in displayScenes"
-          :key="s.rank"
-          class="chip"
-          :class="{ on: selectedRanks.includes(s.rank) }"
-        >
-          <input v-model="selectedRanks" type="checkbox" :value="s.rank" />
-          #{{ s.rank }} {{ sceneTypeLabel(s.sceneType) }} · {{ formatFreq(s.freqCenterMhz) }} MHz
-        </label>
+      <div class="df-match-section">
+        <h4 class="section-subtitle">测向–定位关联</h4>
+        <SceneDfMatchPanel
+          ref="dfMatchPanel"
+          :upload-files="pickedFiles"
+          :output-dir="(sceneResult && sceneResult.outputDir) || params.outputDir || ''"
+          @match-result="dfMatchResult = $event"
+        />
       </div>
-      <label class="select-all">
-        <input type="checkbox" :checked="allScenesSelected" @change="toggleAllScenes" />
-        全选参与信号分析
-      </label>
-      <button
-        v-if="forwardResult"
-        type="button"
-        class="secondary-btn"
-        :disabled="!canReForward || pipelineRunning"
-        @click="runForwardOnly"
-      >
-        仅用当前所选场景重新做信号分析
-      </button>
-    </section>
+      <div class="actions">
+        <el-button
+          type="primary"
+          :disabled="!pickedFiles.length || pipelineRunning"
+          @click="runFullPipeline"
+        >
+          {{ pipelineRunning ? "处理中…" : "开始分析（场景筛选 → 信号分析）" }}
+        </el-button>
+        <span v-if="statusMsg" class="cet36-status">{{ statusMsg }}</span>
+        <span v-if="errorMsg" class="cet36-error">{{ errorMsg }}</span>
+      </div>
+    </ThemePanel>
 
-    <SceneResultsPanel
-      v-if="sceneResult"
-      :report="report || { rows: [], buildTimeMs: 0 }"
-      :scene-result="sceneResult"
-      :forward-items="forwardItems"
-      :command-net-pass="commandNetPass"
-      :loading="reportLoading"
-      :active-row-key="activeRowKey"
-      @select-row="onTableSelectRow"
-    />
+    <ThemePanel v-if="sceneResult" title="结果查看" :label-index="4">
+      <template v-if="sceneResult.scenes && sceneResult.scenes.length">
+        <p class="meta">
+          检测 {{ sceneResult.totalDetections }} 条 · 轨迹 {{ sceneResult.confirmedTracks }} 条 ·
+          {{ sceneResult.scenes.length }} 个场景
+        </p>
+        <div class="scene-chips">
+          <label
+            v-for="s in displayScenes"
+            :key="s.rank"
+            class="chip"
+            :class="{ on: selectedRanks.includes(s.rank) }"
+          >
+            <input v-model="selectedRanks" type="checkbox" :value="s.rank" />
+            #{{ s.rank }} {{ sceneTypeLabel(s.sceneType) }} · {{ formatFreq(s.freqCenterMhz) }} MHz
+          </label>
+        </div>
+        <label class="select-all">
+          <input type="checkbox" :checked="allScenesSelected" @change="toggleAllScenes" />
+          全选参与信号分析
+        </label>
+        <el-button
+          v-if="forwardResult"
+          :disabled="!canReForward || pipelineRunning"
+          @click="runForwardOnly"
+        >
+          仅用当前所选场景重新做信号分析
+        </el-button>
+      </template>
 
-    <SignalNetworkExplorer
-      v-if="forwardItems.length"
-      ref="explorerRef"
-      :scene-items="forwardItems"
-      :external-target-fixes="externalTargetFixes"
-      :external-fix-meta="externalFixMeta"
-      :df-match-result="dfMatchResult"
-      :initial-scene-rank="initialExplorerScene"
-      :initial-network-id="initialExplorerNetwork"
-    />
+      <SceneResultsPanel
+        v-if="sceneResult"
+        :report="report || { rows: [], buildTimeMs: 0 }"
+        :scene-result="sceneResult"
+        :forward-items="forwardItems"
+        :command-net-pass="commandNetPass"
+        :loading="reportLoading"
+        :active-row-key="activeRowKey"
+        @select-row="onTableSelectRow"
+      />
+
+      <SignalNetworkExplorer
+        v-if="forwardItems.length"
+        ref="explorerRef"
+        :scene-items="forwardItems"
+        :external-target-fixes="externalTargetFixes"
+        :external-fix-meta="externalFixMeta"
+        :df-match-result="dfMatchResult"
+        :initial-scene-rank="initialExplorerScene"
+        :initial-network-id="initialExplorerNetwork"
+      />
+    </ThemePanel>
   </div>
 </template>
 
-<script setup>
-import { computed, nextTick, reactive, ref } from "vue";
+<script>
+import ThemePanel from "@/components/shell/ThemePanel.vue";
 import SceneResultsPanel from "./SceneResultsPanel.vue";
 import SignalNetworkExplorer from "./SignalNetworkExplorer.vue";
 import ImportDataScatterViz from "./ImportDataScatterViz.vue";
 import SceneDfMatchPanel from "./SceneDfMatchPanel.vue";
-import { analyzeScenesUpload, fetchVisualizationData, processScenesPipeline } from "../scene/sceneApi.js";
+import {
+  analyzeScenesUpload,
+  fetchVisualizationData,
+  processScenesPipeline
+} from "@/api/pdwfx";
 import { clearAnalysisViewCache } from "../scene/analysisViewCache.js";
 import { formatFreq, sceneTypeLabel, sortScenesForDisplay } from "../scene/sceneFilters.js";
 
-const pickedFiles = ref([]);
-const params = reactive({
-  freqMin: 200,
-  freqMax: 1000,
-  fullSpanWindow: true,
-  windowSeconds: 120,
-  windowStepSeconds: 30,
-  minTracksInScene: 1,
-  topKTrackScenes: 50,
-  topKPollingScenes: 50,
-  outputDir: "./output",
-  freqTolerance: 0.01,
-  preloadAll: true,
-  enableImportScatter: false
-});
-
-const pipelineRunning = ref(false);
-const statusMsg = ref("");
-const errorMsg = ref("");
-const sceneResult = ref(null);
-const forwardResult = ref(null);
-const report = ref(null);
-const reportLoading = ref(false);
-const forwardItems = ref([]);
-const commandNetPass = ref(null);
-const selectedRanks = ref([]);
-const activeRowKey = ref("");
-const explorerRef = ref(null);
-const dfMatchPanel = ref(null);
-const initialExplorerScene = ref(null);
-const initialExplorerNetwork = ref(null);
-const importScatter = ref(null);
-const importVizLoading = ref(false);
-const importVizError = ref("");
-
-let abortController = null;
-let importAbort = null;
-
-const allScenesSelected = computed(() => {
-  const n = displayScenes.value.length;
-  return n > 0 && selectedRanks.value.length === n;
-});
-
-const displayScenes = computed(() =>
-  sortScenesForDisplay(sceneResult.value?.scenes || [])
-);
-
-const canReForward = computed(
-  () =>
-    sceneResult.value?.sourceCsv &&
-    sceneResult.value?.outputDir &&
-    selectedRanks.value.length > 0
-);
-
-const externalTargetFixes = computed(() => sceneResult.value?.externalTargetFixes || []);
-const dfMatchResult = ref(null);
-
-const externalFixMeta = computed(() => {
-  const total = sceneResult.value?.externalTargetFixTotalCount || 0;
-  const shown = externalTargetFixes.value.length;
-  const files = sceneResult.value?.externalSourceFiles || [];
-  if (!total) return "";
-  const fileNote = files.length ? ` · ${files.join(", ")}` : "";
-  const sampleNote = shown < total ? `（地图抽样 ${shown}/${total}）` : "";
-  return `外源定位 ${total} 点${sampleNote}${fileNote}`;
-});
-
-function onPickFiles(e) {
-  const list = [...(e.target.files || [])].filter((f) =>
-    f.name.toLowerCase().endsWith(".csv")
-  );
-  if (!list.length) {
-    errorMsg.value = "未找到 CSV 文件";
-    return;
-  }
-  pickedFiles.value = list;
-  errorMsg.value = "";
-  e.target.value = "";
-}
-
-async function loadImportScatter(result) {
-  importVizError.value = "";
-  const inline = result?.visualization?.importScatter
-    ? result.visualization.importScatter
-    : null;
-  if (inline) {
-    importScatter.value = inline;
-    return;
-  }
-  const outputDir = result?.outputDir;
-  if (!outputDir) {
-    importScatter.value = null;
-    return;
-  }
-  importAbort?.abort();
-  importAbort = new AbortController();
-  try {
-    const data = await fetchVisualizationData(outputDir, importAbort.signal);
-    importScatter.value = data?.importScatter || null;
-    if (!importScatter.value) {
-      importVizError.value = "散点数据未生成，请确认已完成场景预筛。";
-    }
-  } catch (err) {
-    if (err?.name !== "AbortError") {
-      importVizError.value = err?.message || "加载散点失败";
-      importScatter.value = null;
-    }
-  }
-}
-
-async function runSceneScreeningForViz() {
-  if (!pickedFiles.value.length) return;
-  importAbort?.abort();
-  importAbort = new AbortController();
-  clearAnalysisViewCache();
-  forwardResult.value = null;
-  forwardItems.value = [];
-  commandNetPass.value = null;
-  report.value = null;
-  activeRowKey.value = "";
-  importVizLoading.value = true;
-  importVizError.value = "";
-  importScatter.value = null;
-  statusMsg.value = "正在预筛场景并标绘全量散点…";
-  try {
-    const result = await analyzeScenesUpload(
-      pickedFiles.value,
-      params,
-      importAbort.signal
-    );
-    sceneResult.value = result;
-    selectedRanks.value = sortScenesForDisplay(result.scenes || []).map((s) => s.rank);
-    await loadImportScatter(result);
-    statusMsg.value = result.scenes?.length
-      ? `已标绘全量散点 · 筛出 ${result.scenes.length} 个优质场景`
-      : "已完成预筛，未找到优质场景";
-  } catch (err) {
-    if (err?.name !== "AbortError") {
-      importVizError.value = err?.message || "预筛失败";
-      errorMsg.value = importVizError.value;
-    }
-    statusMsg.value = "";
-  } finally {
-    importVizLoading.value = false;
-  }
-}
-
-function clearAll() {
-  importAbort?.abort();
-  clearAnalysisViewCache();
-  pickedFiles.value = [];
-  sceneResult.value = null;
-  forwardResult.value = null;
-  report.value = null;
-  forwardItems.value = [];
-  commandNetPass.value = null;
-  selectedRanks.value = [];
-  activeRowKey.value = "";
-  importScatter.value = null;
-  importVizError.value = "";
-  importVizLoading.value = false;
-  statusMsg.value = "";
-  errorMsg.value = "";
-}
-
-function toggleAllScenes(e) {
-  const scenes = sceneResult.value?.scenes || [];
-  selectedRanks.value = e.target.checked ? scenes.map((s) => s.rank) : [];
-}
-
-async function runFullPipeline() {
-  if (!pickedFiles.value.length) return;
-  clearAnalysisViewCache();
-  pipelineRunning.value = true;
-  errorMsg.value = "";
-  statusMsg.value = "场景筛选中…";
-  abortController = new AbortController();
-  const signal = abortController.signal;
-  const timer = setTimeout(() => abortController?.abort(), 90 * 60 * 1000);
-  try {
-    sceneResult.value = await analyzeScenesUpload(pickedFiles.value, params, signal);
-    selectedRanks.value = (sceneResult.value.scenes || []).map((s) => s.rank);
-    if (params.enableImportScatter) {
-      await loadImportScatter(sceneResult.value);
-    }
-    if (!selectedRanks.value.length) {
-      errorMsg.value = "未筛选出优质场景，请调整参数";
-      return;
-    }
-    await runForwardAndReport(signal);
-    await autoRunDfMatch();
-    statusMsg.value = `完成：${report.value?.rows?.length || 0} 条目标明细`;
-  } catch (e) {
-    errorMsg.value =
-      e?.name === "AbortError" ? "分析超时（30 分钟）" : e?.message || "分析失败";
-  } finally {
-    clearTimeout(timer);
-    pipelineRunning.value = false;
-  }
-}
-
-async function runForwardOnly() {
-  if (!canReForward.value) return;
-  clearAnalysisViewCache();
-  pipelineRunning.value = true;
-  errorMsg.value = "";
-  abortController = new AbortController();
-  try {
-    statusMsg.value = "信号分析中…";
-    await runForwardAndReport(abortController.signal);
-    pickInitialExplorerFocus();
-    statusMsg.value = "信号分析与报告已更新";
-  } catch (e) {
-    errorMsg.value = e?.message || "失败";
-  } finally {
-    pipelineRunning.value = false;
-  }
-}
-
-async function autoRunDfMatch() {
-  await nextTick();
-  if (!dfMatchPanel.value?.runIfReady) return;
-  statusMsg.value = "测向–定位匹配中…";
-  try {
-    await dfMatchPanel.value.runIfReady();
-  } catch (e) {
-    if (e?.name !== "AbortError") {
-      errorMsg.value = e?.message || "测向匹配失败";
-    }
-  }
-}
-
-async function runForwardAndReport(signal) {
-  reportLoading.value = true;
-  report.value = { rows: [], buildTimeMs: 0, partial: true };
-  forwardItems.value = [];
-  commandNetPass.value = null;
-  activeRowKey.value = "";
-  await nextTick();
-
-  try {
-    const summary = await processScenesPipeline(
-      {
-        sourceCsvPath: sceneResult.value.sourceCsv,
-        outputDir: sceneResult.value.outputDir,
-        sceneRanks: [...selectedRanks.value].map(Number).sort((a, b) => a - b),
-        freqTolerance: params.freqTolerance,
-        preloadAll: params.preloadAll
+export default {
+  name: "SceneWorkflow",
+  components: {
+    ThemePanel,
+    SceneResultsPanel,
+    SignalNetworkExplorer,
+    ImportDataScatterViz,
+    SceneDfMatchPanel
+  },
+  data() {
+    return {
+      pickedFiles: [],
+      params: {
+        freqMin: 200,
+        freqMax: 1000,
+        fullSpanWindow: true,
+        windowSeconds: 120,
+        windowStepSeconds: 30,
+        minTracksInScene: 1,
+        topKTrackScenes: 50,
+        topKPollingScenes: 50,
+        outputDir: "./output",
+        freqTolerance: 0.01,
+        preloadAll: true,
+        enableImportScatter: false
       },
-      {
-        signal,
-        onProgress: (cur, total, rank) => {
-          statusMsg.value = `优质场景 ${cur}/${total}（#${rank}）分析中…`;
-        },
-        onCommandNet: () => {
-          statusMsg.value = "预警机指挥网二次分析中…";
-        },
-        onPartialRows: (rows) => {
-          report.value = {
-            rows: [...rows],
-            buildTimeMs: report.value?.buildTimeMs || 0,
-            partial: true
-          };
+      pipelineRunning: false,
+      statusMsg: "",
+      errorMsg: "",
+      sceneResult: null,
+      forwardResult: null,
+      report: null,
+      reportLoading: false,
+      forwardItems: [],
+      commandNetPass: null,
+      selectedRanks: [],
+      activeRowKey: "",
+      initialExplorerScene: null,
+      initialExplorerNetwork: null,
+      importScatter: null,
+      importVizLoading: false,
+      importVizError: "",
+      dfMatchResult: null,
+      abortController: null,
+      importAbort: null
+    };
+  },
+  computed: {
+    allScenesSelected() {
+      const n = this.displayScenes.length;
+      return n > 0 && this.selectedRanks.length === n;
+    },
+    displayScenes() {
+      return sortScenesForDisplay(
+        (this.sceneResult && this.sceneResult.scenes) || []
+      );
+    },
+    canReForward() {
+      return (
+        this.sceneResult &&
+        this.sceneResult.sourceCsv &&
+        this.sceneResult.outputDir &&
+        this.selectedRanks.length > 0
+      );
+    },
+    externalTargetFixes() {
+      return (this.sceneResult && this.sceneResult.externalTargetFixes) || [];
+    },
+    externalFixMeta() {
+      const total =
+        (this.sceneResult && this.sceneResult.externalTargetFixTotalCount) || 0;
+      const shown = this.externalTargetFixes.length;
+      const files =
+        (this.sceneResult && this.sceneResult.externalSourceFiles) || [];
+      if (!total) return "";
+      const fileNote = files.length ? " · " + files.join(", ") : "";
+      const sampleNote = shown < total ? "（地图抽样 " + shown + "/" + total + "）" : "";
+      return "外源定位 " + total + " 点" + sampleNote + fileNote;
+    }
+  },
+  watch: {},
+  methods: {
+    formatFreq,
+    sceneTypeLabel,
+    openFilePicker() {
+      const input = this.$refs.fileInput;
+      if (input) {
+        input.click();
+      }
+    },
+    onPickFiles(e) {
+      const list = [...(e.target.files || [])].filter(function(f) {
+        return f.name.toLowerCase().endsWith(".csv");
+      });
+      if (!list.length) {
+        this.errorMsg = "未找到 CSV 文件";
+        return;
+      }
+      this.pickedFiles = list;
+      this.errorMsg = "";
+      e.target.value = "";
+    },
+    async loadImportScatter(result) {
+      this.importVizError = "";
+      const inline =
+        result && result.visualization && result.visualization.importScatter
+          ? result.visualization.importScatter
+          : null;
+      if (inline) {
+        this.importScatter = inline;
+        return;
+      }
+      const outputDir = result && result.outputDir;
+      if (!outputDir) {
+        this.importScatter = null;
+        return;
+      }
+      if (this.importAbort) {
+        this.importAbort.abort();
+      }
+      this.importAbort = new AbortController();
+      try {
+        const data = await fetchVisualizationData(outputDir, this.importAbort.signal);
+        this.importScatter = (data && data.importScatter) || null;
+        if (!this.importScatter) {
+          this.importVizError = "散点数据未生成，请确认已完成场景预筛。";
+        }
+      } catch (err) {
+        if (!err || err.name !== "AbortError") {
+          this.importVizError = (err && err.message) || "加载散点失败";
+          this.importScatter = null;
         }
       }
-    );
-    forwardItems.value = sortScenesForDisplay(summary.forwardItems || []);
-    commandNetPass.value = summary.commandNetPass || null;
-    forwardResult.value = {
-      sourceCsv: sceneResult.value.sourceCsv,
-      outputDir: sceneResult.value.outputDir,
-      scenes: summary.forwardItems.length
-    };
-    report.value = {
-      rows: summary.rows,
-      buildTimeMs: summary.buildTimeMs,
-      networkDetailCount: summary.networkDetailCount,
-      partial: false
-    };
-    pickInitialExplorerFocus();
-  } finally {
-    reportLoading.value = false;
+    },
+    async runSceneScreeningForViz() {
+      if (!this.pickedFiles.length) return;
+      if (this.importAbort) {
+        this.importAbort.abort();
+      }
+      this.importAbort = new AbortController();
+      clearAnalysisViewCache();
+      this.forwardResult = null;
+      this.forwardItems = [];
+      this.commandNetPass = null;
+      this.report = null;
+      this.activeRowKey = "";
+      this.importVizLoading = true;
+      this.importVizError = "";
+      this.importScatter = null;
+      this.statusMsg = "正在预筛场景并标绘全量散点…";
+      try {
+        const result = await analyzeScenesUpload(
+          this.pickedFiles,
+          this.params,
+          this.importAbort.signal
+        );
+        this.sceneResult = result;
+        this.selectedRanks = sortScenesForDisplay(result.scenes || []).map(function(s) {
+          return s.rank;
+        });
+        await this.loadImportScatter(result);
+        this.statusMsg =
+          result.scenes && result.scenes.length
+            ? "已标绘全量散点 · 筛出 " + result.scenes.length + " 个优质场景"
+            : "已完成预筛，未找到优质场景";
+      } catch (err) {
+        if (!err || err.name !== "AbortError") {
+          this.importVizError = (err && err.message) || "预筛失败";
+          this.errorMsg = this.importVizError;
+        }
+        this.statusMsg = "";
+      } finally {
+        this.importVizLoading = false;
+      }
+    },
+    clearAll() {
+      if (this.importAbort) {
+        this.importAbort.abort();
+      }
+      clearAnalysisViewCache();
+      this.pickedFiles = [];
+      this.sceneResult = null;
+      this.forwardResult = null;
+      this.report = null;
+      this.forwardItems = [];
+      this.commandNetPass = null;
+      this.selectedRanks = [];
+      this.activeRowKey = "";
+      this.importScatter = null;
+      this.importVizError = "";
+      this.importVizLoading = false;
+      this.statusMsg = "";
+      this.errorMsg = "";
+    },
+    toggleAllScenes(e) {
+      const scenes = (this.sceneResult && this.sceneResult.scenes) || [];
+      this.selectedRanks = e.target.checked
+        ? scenes.map(function(s) {
+            return s.rank;
+          })
+        : [];
+    },
+    async runFullPipeline() {
+      if (!this.pickedFiles.length) return;
+      clearAnalysisViewCache();
+      this.pipelineRunning = true;
+      this.errorMsg = "";
+      this.statusMsg = "场景筛选中…";
+      this.abortController = new AbortController();
+      const signal = this.abortController.signal;
+      const self = this;
+      const timer = setTimeout(function() {
+        if (self.abortController) {
+          self.abortController.abort();
+        }
+      }, 90 * 60 * 1000);
+      try {
+        this.sceneResult = await analyzeScenesUpload(
+          this.pickedFiles,
+          this.params,
+          signal
+        );
+        this.selectedRanks = (this.sceneResult.scenes || []).map(function(s) {
+          return s.rank;
+        });
+        if (this.params.enableImportScatter) {
+          await this.loadImportScatter(this.sceneResult);
+        }
+        if (!this.selectedRanks.length) {
+          this.errorMsg = "未筛选出优质场景，请调整参数";
+          return;
+        }
+        await this.runForwardAndReport(signal);
+        await this.autoRunDfMatch();
+        this.statusMsg =
+          "完成：" + ((this.report && this.report.rows && this.report.rows.length) || 0) + " 条目标明细";
+      } catch (e) {
+        this.errorMsg =
+          e && e.name === "AbortError" ? "分析超时（30 分钟）" : (e && e.message) || "分析失败";
+      } finally {
+        clearTimeout(timer);
+        this.pipelineRunning = false;
+      }
+    },
+    async runForwardOnly() {
+      if (!this.canReForward) return;
+      clearAnalysisViewCache();
+      this.pipelineRunning = true;
+      this.errorMsg = "";
+      this.abortController = new AbortController();
+      try {
+        this.statusMsg = "信号分析中…";
+        await this.runForwardAndReport(this.abortController.signal);
+        this.pickInitialExplorerFocus();
+        this.statusMsg = "信号分析与报告已更新";
+      } catch (e) {
+        this.errorMsg = (e && e.message) || "失败";
+      } finally {
+        this.pipelineRunning = false;
+      }
+    },
+    async autoRunDfMatch() {
+      await this.$nextTick();
+      const panel = this.$refs.dfMatchPanel;
+      if (!panel || !panel.runIfReady) return;
+      this.statusMsg = "测向–定位匹配中…";
+      try {
+        await panel.runIfReady();
+      } catch (e) {
+        if (!e || e.name !== "AbortError") {
+          this.errorMsg = (e && e.message) || "测向匹配失败";
+        }
+      }
+    },
+    async runForwardAndReport(signal) {
+      this.reportLoading = true;
+      this.report = { rows: [], buildTimeMs: 0, partial: true };
+      this.forwardItems = [];
+      this.commandNetPass = null;
+      this.activeRowKey = "";
+      await this.$nextTick();
+
+      try {
+        const self = this;
+        const summary = await processScenesPipeline(
+          {
+            sourceCsvPath: this.sceneResult.sourceCsv,
+            outputDir: this.sceneResult.outputDir,
+            sceneRanks: [...this.selectedRanks].map(Number).sort(function(a, b) {
+              return a - b;
+            }),
+            freqTolerance: this.params.freqTolerance,
+            preloadAll: this.params.preloadAll
+          },
+          {
+            signal: signal,
+            onProgress: function(cur, total, rank) {
+              self.statusMsg = "优质场景 " + cur + "/" + total + "（#" + rank + "）分析中…";
+            },
+            onCommandNet: function() {
+              self.statusMsg = "预警机指挥网二次分析中…";
+            },
+            onPartialRows: function(rows) {
+              self.report = {
+                rows: [...rows],
+                buildTimeMs: (self.report && self.report.buildTimeMs) || 0,
+                partial: true
+              };
+            }
+          }
+        );
+        this.forwardItems = sortScenesForDisplay(summary.forwardItems || []);
+        this.commandNetPass = summary.commandNetPass || null;
+        this.forwardResult = {
+          sourceCsv: this.sceneResult.sourceCsv,
+          outputDir: this.sceneResult.outputDir,
+          scenes: summary.forwardItems.length
+        };
+        this.report = {
+          rows: summary.rows,
+          buildTimeMs: summary.buildTimeMs,
+          networkDetailCount: summary.networkDetailCount,
+          partial: false
+        };
+        this.pickInitialExplorerFocus();
+      } finally {
+        this.reportLoading = false;
+      }
+    },
+    pickInitialExplorerFocus() {
+      const first = this.forwardItems.find(function(x) {
+        return x.session && x.session.networks && x.session.networks.length;
+      });
+      if (!first) return;
+      const net = first.session.networks[0];
+      this.initialExplorerScene = first.rank;
+      this.initialExplorerNetwork = net && net.networkId;
+      const self = this;
+      setTimeout(function() {
+        const explorer = self.$refs.explorerRef;
+        if (explorer && explorer.focusNetwork) {
+          explorer.focusNetwork(first.rank, net && net.networkId);
+        }
+      }, 100);
+    },
+    onTableSelectRow(r) {
+      this.activeRowKey =
+        r.sceneRank + "-" + r.analysisId + "-" + r.networkId + "-" + (r.targetId || "");
+      const explorer = this.$refs.explorerRef;
+      if (explorer && explorer.focusNetwork) {
+        explorer.focusNetwork(r.sceneRank, r.networkId, r.targetId);
+      }
+    }
+  },
+  mounted() {},
+  beforeDestroy() {
+    if (this.abortController) {
+      this.abortController.abort();
+    }
+    if (this.importAbort) {
+      this.importAbort.abort();
+    }
   }
-}
-
-function pickInitialExplorerFocus() {
-  const first = forwardItems.value.find((x) => x.session?.networks?.length);
-  if (!first) return;
-  const net = first.session.networks[0];
-  initialExplorerScene.value = first.rank;
-  initialExplorerNetwork.value = net?.networkId;
-  setTimeout(() => {
-    explorerRef.value?.focusNetwork?.(first.rank, net?.networkId);
-  }, 100);
-}
-
-function onTableSelectRow(r) {
-  activeRowKey.value = `${r.sceneRank}-${r.analysisId}-${r.networkId}-${r.targetId || ""}`;
-  explorerRef.value?.focusNetwork?.(r.sceneRank, r.networkId, r.targetId);
-}
+};
 </script>
 
 <style scoped>
@@ -501,66 +564,28 @@ function onTableSelectRow(r) {
   font-family: Arial, sans-serif;
   max-width: 100%;
 }
-.workflow-header h2 {
-  margin: 0 0 4px;
-  font-size: 1.35rem;
-}
 .subtitle {
-  color: #6b7280;
+  color: var(--theme-text-secondary);
   font-size: 13px;
   margin: 0 0 10px;
-}
-.steps {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 16px;
-  margin: 0 0 16px;
-  padding: 0;
-  list-style: none;
-  font-size: 13px;
-  color: #9ca3af;
-}
-.steps li.done {
-  color: #1d4ed8;
-  font-weight: 600;
-}
-.step-card {
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 14px 16px;
-  margin-bottom: 14px;
-  background: #fff;
-}
-.step-card h3 {
-  margin: 0 0 10px;
-  font-size: 1rem;
 }
 .upload-row {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
   align-items: center;
 }
-.upload-btn {
-  display: inline-block;
-  padding: 8px 14px;
-  background: #2563eb;
-  color: #fff;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 13px;
-}
-.upload-btn.secondary {
-  background: #6b7280;
-}
-.upload-btn input {
-  display: none;
-}
-.text-btn {
-  background: none;
-  border: none;
-  color: #6b7280;
-  cursor: pointer;
+.upload-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+  opacity: 0;
 }
 .file-list {
   margin: 8px 0 0;
@@ -568,11 +593,7 @@ function onTableSelectRow(r) {
   font-size: 12px;
   max-height: 100px;
   overflow-y: auto;
-}
-.hint {
-  font-size: 12px;
-  color: #9ca3af;
-  margin: 0;
+  color: var(--theme-text-secondary);
 }
 .param-grid {
   display: grid;
@@ -583,18 +604,20 @@ function onTableSelectRow(r) {
   display: flex;
   flex-direction: column;
   font-size: 12px;
-  color: #4b5563;
+  color: var(--theme-text-secondary);
   gap: 4px;
 }
 .param-grid input[type="number"],
 .param-grid input[type="text"] {
   padding: 6px 8px;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--theme-border);
   border-radius: 6px;
+  background: var(--theme-bg-primary);
+  color: var(--theme-text-primary);
 }
 .param-grid input:disabled {
-  background: #f3f4f6;
-  color: #9ca3af;
+  background: var(--theme-bg-secondary);
+  color: var(--theme-text-muted);
 }
 .signal-params {
   grid-template-columns: 1fr 1fr;
@@ -605,19 +628,16 @@ function onTableSelectRow(r) {
   align-items: center;
   gap: 8px !important;
   font-size: 13px;
-  color: #374151;
+  color: var(--theme-text-primary);
   margin: 0 0 8px;
 }
 .scatter-opt {
   margin-top: 10px;
 }
-.scatter-btn {
-  margin-top: 8px;
-}
 .param-hint,
 .field-hint {
   font-size: 11px;
-  color: #6b7280;
+  color: var(--theme-text-muted);
   font-weight: normal;
 }
 .param-hint {
@@ -628,46 +648,25 @@ function onTableSelectRow(r) {
   display: block;
   margin-top: 2px;
 }
+.df-match-section {
+  margin-top: 12px;
+}
+.section-subtitle {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--theme-text-accent);
+}
 .actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 12px;
-}
-.primary {
-  padding: 10px 20px;
-  background: #1d4ed8;
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 14px;
-}
-.primary:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-.secondary-btn {
-  margin-top: 8px;
-  padding: 8px 14px;
-  background: #f3f4f6;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.status {
-  color: #2563eb;
-  font-weight: 600;
-  font-size: 13px;
-}
-.error {
-  color: #b91c1c;
-  font-weight: 600;
-  font-size: 13px;
+  margin-top: 14px;
 }
 .meta {
   font-size: 12px;
-  color: #6b7280;
+  color: var(--theme-text-muted);
   margin: 0 0 8px;
 }
 .scene-chips {
@@ -680,18 +679,21 @@ function onTableSelectRow(r) {
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--theme-border);
   border-radius: 20px;
   font-size: 12px;
   cursor: pointer;
+  color: var(--theme-text-secondary);
 }
 .chip.on {
-  border-color: #7c3aed;
-  background: #f5f3ff;
+  border-color: var(--theme-accent-bright);
+  background: var(--theme-bg-panel);
+  color: var(--theme-text-accent);
 }
 .select-all {
   display: block;
   margin-top: 10px;
   font-size: 13px;
+  color: var(--theme-text-primary);
 }
 </style>

@@ -29,8 +29,8 @@ export function collectBearingsFromNetwork(network) {
         rxLon: p.platformLon,
         rxLat: p.platformLat,
         freqHz: Number.isFinite(Number(p.freq))
-          ? Math.round(Number(p.freq) * 1_000_000)
-          : Math.round(netFreq * 1_000_000),
+          ? Math.round(Number(p.freq) * 1000000)
+          : Math.round(netFreq * 1000000),
         signalLevel: p.signalLevel,
         signalDwellMs: p.signalDwellMs,
         targetId: t.targetId
@@ -83,7 +83,7 @@ export function enrichTableRows(rows) {
 export function formatFreqMhzFromHz(freqHz) {
   const hz = Number(freqHz);
   if (!Number.isFinite(hz) || hz <= 0) return "—";
-  return (hz / 1_000_000).toFixed(4);
+  return (hz / 1000000).toFixed(4);
 }
 
 /** 地图检视时测向线过多则均匀抽样，避免卡顿 */

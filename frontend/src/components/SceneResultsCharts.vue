@@ -1,3 +1,4 @@
+<!-- vue2-done -->
 <template>
   <div class="charts-wrap">
     <div class="chart-block">
@@ -24,33 +25,20 @@
         </template>
       </p>
       <div v-if="!sceneGrouped" class="matrix-scroll">
-        <table v-if="channelMatrix.rows.length" class="channel-matrix">
-          <thead>
-            <tr>
-              <th class="matrix-corner">目标 \\ 波道</th>
-              <th
-                v-for="col in channelMatrix.columns"
-                :key="col.id"
-                class="matrix-col-head"
-              >
-                {{ col.label }}
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="row in channelMatrix.rows" :key="row.key">
-              <th class="matrix-row-head">{{ row.label }}</th>
-              <td
-                v-for="(checked, ci) in row.cells"
-                :key="ci"
-                class="matrix-cell"
-                :class="{ occupied: checked }"
-              >
-                {{ checked ? "✓" : "" }}
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <el-table v-if="channelMatrix.rows.length" :data="channelMatrix.rows" size="mini" border class="channel-matrix">
+          <el-table-column prop="label" label="目标 \ 波道" min-width="120" fixed />
+          <el-table-column
+            v-for="(col, ci) in channelMatrix.columns"
+            :key="col.id"
+            :label="col.label"
+            min-width="72"
+            align="center"
+          >
+            <template slot-scope="scope">
+              <span :class="{ occupied: scope.row.cells[ci] }">{{ scope.row.cells[ci] ? "✓" : "" }}</span>
+            </template>
+          </el-table-column>
+        </el-table>
         <p v-else class="empty">暂无数据</p>
       </div>
       <div v-else class="cross-grid">
@@ -127,233 +115,237 @@
   </div>
 </template>
 
-<script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import * as echarts from "echarts";
-import { formatFreq, formatSceneLabel, targetTypeLabel } from "../scene/sceneFilters.js";
+<script>
+import { initCet36Chart, applyCet36Theme, CET36_CHART_COLORS } from "@/scene/echartsTheme.js";
+import { formatFreq, formatSceneLabel, targetTypeLabel } from "@/scene/sceneFilters.js";
 import {
   buildHopTargetChannelMatrix,
   buildTargetChannelMatrixFromRows
-} from "../scene/hopChannelMatrix.js";
+} from "@/scene/hopChannelMatrix.js";
 
-const props = defineProps({
-  rows: { type: Array, default: () => [] },
-  hoppingTrackViews: { type: Array, default: () => [] },
-  sceneGrouped: { type: Boolean, default: true }
-});
-
-const chartTarget = ref(null);
-const chartComm = ref(null);
-let instTarget = null;
-let instComm = null;
-
-function channelLabel(row) {
-  return row.commLinkChannelLabel || row.commLinkChannel || "";
-}
-
-function splitChannels(text) {
-  if (!text) return [];
-  return text.split(/[、,；;]/).map((s) => s.trim()).filter(Boolean);
-}
-
-function targetDisplayLabel(targetId, targetType, targetTypeLabelText, freqMhz) {
-  const type = targetTypeLabelText || targetTypeLabel(targetType);
-  const base = type && type !== "—" ? `${targetId}-${type}` : targetId;
-  const f = formatFreq(freqMhz);
-  return f && f !== "—" ? `${base} ${f}` : base;
-}
-
-function applyRowspan(list, keyFn, showField, spanField) {
-  let i = 0;
-  while (i < list.length) {
-    const key = keyFn(list[i]);
-    let j = i + 1;
-    while (j < list.length && keyFn(list[j]) === key) j++;
-    const span = j - i;
-    list[i][showField] = true;
-    list[i][spanField] = span;
-    for (let k = i + 1; k < j; k++) {
-      list[k][showField] = false;
-      list[k][spanField] = 1;
-    }
-    i = j;
-  }
-}
-
-const targetToChannelsRows = computed(() => {
-  const seen = new Set();
-  const list = [];
-  for (const r of props.rows || []) {
-    if (!r.targetId) continue;
-    const chText = r.targetChannelsUsed || channelLabel(r);
-    const channels = splitChannels(chText);
-    const chList = channels.length ? channels : (channelLabel(r) ? [channelLabel(r)] : ["未研判"]);
-    const targetLabel = targetDisplayLabel(r.targetId, r.targetType, r.targetTypeLabel, r.networkFreqMhz);
-    for (const ch of chList) {
-      const dedupeKey = props.sceneGrouped
-        ? `${r.sceneRank}|${r.targetId}|${formatFreq(r.networkFreqMhz)}|${ch}`
-        : `${targetLabel}|${ch}`;
-      if (seen.has(dedupeKey)) continue;
-      seen.add(dedupeKey);
-      list.push({
-        sceneRank: r.sceneRank,
-        sceneType: r.sceneType,
-        sceneLabel: formatSceneLabel(r.sceneRank, r.sceneType, r),
-        targetLabel,
-        channel: ch
+export default {
+  name: "SceneResultsCharts",
+  props: {
+    rows: { type: Array, default: function () { return []; } },
+    hoppingTrackViews: { type: Array, default: function () { return []; } },
+    sceneGrouped: { type: Boolean, default: true }
+  },
+  computed: {
+    targetToChannelsRows: function () {
+      var seen = new Set();
+      var list = [];
+      var self = this;
+      (this.rows || []).forEach(function (r) {
+        if (!r.targetId) return;
+        var chText = r.targetChannelsUsed || self.channelLabel(r);
+        var channels = self.splitChannels(chText);
+        var chList = channels.length ? channels : (self.channelLabel(r) ? [self.channelLabel(r)] : ["未研判"]);
+        var targetLabel = self.targetDisplayLabel(r.targetId, r.targetType, r.targetTypeLabel, r.networkFreqMhz);
+        chList.forEach(function (ch) {
+          var dedupeKey = self.sceneGrouped
+            ? r.sceneRank + "|" + r.targetId + "|" + formatFreq(r.networkFreqMhz) + "|" + ch
+            : targetLabel + "|" + ch;
+          if (seen.has(dedupeKey)) return;
+          seen.add(dedupeKey);
+          list.push({
+            sceneRank: r.sceneRank,
+            sceneType: r.sceneType,
+            sceneLabel: formatSceneLabel(r.sceneRank, r.sceneType, r),
+            targetLabel: targetLabel,
+            channel: ch
+          });
+        });
       });
-    }
-  }
-  list.sort(
-    (a, b) =>
-      (props.sceneGrouped ? a.sceneRank - b.sceneRank : 0)
-      || a.channel.localeCompare(b.channel, "zh-CN")
-      || a.targetLabel.localeCompare(b.targetLabel, "zh-CN")
-  );
-  if (props.sceneGrouped) {
-    applyRowspan(list, (r) => r.sceneRank, "showScene", "spanScene");
-    applyRowspan(list, (r) => `${r.sceneRank}|${r.channel}`, "showChannel", "spanChannel");
-  } else {
-    applyRowspan(list, (r) => r.channel, "showChannel", "spanChannel");
-  }
-  return list;
-});
-
-const channelToTargetsRows = computed(() => {
-  const map = new Map();
-  for (const r of props.rows || []) {
-    if (!r.targetId) continue;
-    const ch = channelLabel(r) || "未研判";
-    const targetLabel = targetDisplayLabel(r.targetId, r.targetType, r.targetTypeLabel, r.networkFreqMhz);
-    const key = props.sceneGrouped ? `${r.sceneRank}|${ch}` : ch;
-    if (!map.has(key)) {
-      map.set(key, {
-        sceneRank: r.sceneRank,
-        sceneType: r.sceneType,
-        sceneMeta: r,
-        channel: ch,
-        targets: new Set()
+      list.sort(function (a, b) {
+        return (self.sceneGrouped ? a.sceneRank - b.sceneRank : 0)
+          || a.channel.localeCompare(b.channel, "zh-CN")
+          || a.targetLabel.localeCompare(b.targetLabel, "zh-CN");
       });
-    }
-    map.get(key).targets.add(targetLabel);
-  }
-  const list = [...map.values()]
-    .map((x) => ({
-      sceneRank: x.sceneRank,
-      sceneLabel: formatSceneLabel(x.sceneRank, x.sceneType, x.sceneMeta),
-      channel: x.channel,
-      targets: [...x.targets].sort((a, b) => a.localeCompare(b, "zh-CN")).join("、")
-    }))
-    .sort(
-      (a, b) =>
-        (props.sceneGrouped ? a.sceneRank - b.sceneRank : 0)
-        || a.channel.localeCompare(b.channel, "zh-CN")
-    );
-  if (props.sceneGrouped) {
-    applyRowspan(list, (r) => r.sceneRank, "showScene", "spanScene");
-    applyRowspan(list, (r) => `${r.sceneRank}|${r.channel}`, "showChannel", "spanChannel");
-  } else {
-    applyRowspan(list, (r) => r.channel, "showChannel", "spanChannel");
-  }
-  return list;
-});
-
-const channelMatrix = computed(() => {
-  const list = props.hoppingTrackViews || [];
-  const hop = list.find((v) => v?.unified) || list[0];
-  if (hop?.tracks?.length) {
-    return buildHopTargetChannelMatrix(hop, props.rows);
-  }
-  return buildTargetChannelMatrixFromRows(props.rows);
-});
-
-function disposeAll() {
-  instTarget?.dispose();
-  instComm?.dispose();
-  instTarget = instComm = null;
-}
-
-function render() {
-  disposeAll();
-  if (!props.rows?.length) return;
-
-  const byType = {};
-  const byComm = {};
-
-  for (const r of props.rows) {
-    const tt = r.targetType || "UNKNOWN";
-    byType[tt] = (byType[tt] || 0) + 1;
-    const cl = channelLabel(r) || "未研判";
-    byComm[cl] = (byComm[cl] || 0) + 1;
-  }
-
-  if (chartTarget.value) {
-    instTarget = echarts.init(chartTarget.value);
-    instTarget.setOption({
-      title: { text: "目标类型分布", left: "center", textStyle: { fontSize: 14 } },
-      tooltip: { trigger: "item" },
-      series: [
-        {
-          type: "pie",
-          radius: "55%",
-          data: Object.entries(byType).map(([k, v]) => ({
-            name: targetTypeLabel(k),
-            value: v
-          }))
+      if (this.sceneGrouped) {
+        this.applyRowspan(list, function (r) { return r.sceneRank; }, "showScene", "spanScene");
+        this.applyRowspan(list, function (r) { return r.sceneRank + "|" + r.channel; }, "showChannel", "spanChannel");
+      } else {
+        this.applyRowspan(list, function (r) { return r.channel; }, "showChannel", "spanChannel");
+      }
+      return list;
+    },
+    channelToTargetsRows: function () {
+      var map = new Map();
+      var self = this;
+      (this.rows || []).forEach(function (r) {
+        if (!r.targetId) return;
+        var ch = self.channelLabel(r) || "未研判";
+        var targetLabel = self.targetDisplayLabel(r.targetId, r.targetType, r.targetTypeLabel, r.networkFreqMhz);
+        var key = self.sceneGrouped ? r.sceneRank + "|" + ch : ch;
+        if (!map.has(key)) {
+          map.set(key, {
+            sceneRank: r.sceneRank,
+            sceneType: r.sceneType,
+            sceneMeta: r,
+            channel: ch,
+            targets: new Set()
+          });
         }
-      ]
-    });
-  }
-
-  if (chartComm.value) {
-    instComm = echarts.init(chartComm.value);
-    const entries = Object.entries(byComm).sort((a, b) => b[1] - a[1]).slice(0, 12);
-    instComm.setOption({
-      title: { text: "波道分布（Top12）", left: "center", textStyle: { fontSize: 14 } },
-      tooltip: { trigger: "axis" },
-      grid: { left: 48, right: 16, bottom: 72, top: 48 },
-      xAxis: {
-        type: "category",
-        data: entries.map((e) => e[0]),
-        axisLabel: { rotate: 35, fontSize: 10 }
+        map.get(key).targets.add(targetLabel);
+      });
+      var list = Array.from(map.values()).map(function (x) {
+        return {
+          sceneRank: x.sceneRank,
+          sceneLabel: formatSceneLabel(x.sceneRank, x.sceneType, x.sceneMeta),
+          channel: x.channel,
+          targets: Array.from(x.targets).sort(function (a, b) { return a.localeCompare(b, "zh-CN"); }).join("、")
+        };
+      }).sort(function (a, b) {
+        return (self.sceneGrouped ? a.sceneRank - b.sceneRank : 0)
+          || a.channel.localeCompare(b.channel, "zh-CN");
+      });
+      if (this.sceneGrouped) {
+        this.applyRowspan(list, function (r) { return r.sceneRank; }, "showScene", "spanScene");
+        this.applyRowspan(list, function (r) { return r.sceneRank + "|" + r.channel; }, "showChannel", "spanChannel");
+      } else {
+        this.applyRowspan(list, function (r) { return r.channel; }, "showChannel", "spanChannel");
+      }
+      return list;
+    },
+    channelMatrix: function () {
+      var list = this.hoppingTrackViews || [];
+      var hop = list.find(function (v) { return v && v.unified; }) || list[0];
+      if (hop && hop.tracks && hop.tracks.length) {
+        return buildHopTargetChannelMatrix(hop, this.rows);
+      }
+      return buildTargetChannelMatrixFromRows(this.rows);
+    }
+  },
+  watch: {
+    rows: {
+      handler: function () {
+        this.scheduleRender();
       },
-      yAxis: { type: "value", name: "目标数" },
-      series: [{ type: "bar", data: entries.map((e) => e[1]), itemStyle: { color: "#2563eb" } }]
-    });
-  }
-}
+      deep: true
+    }
+  },
+  mounted: function () {
+    this.scheduleRender();
+    window.addEventListener("resize", this.resizeCharts);
+  },
+  beforeDestroy: function () {
+    window.removeEventListener("resize", this.resizeCharts);
+    this.disposeAll();
+  },
+  methods: {
+    channelLabel: function (row) {
+      return row.commLinkChannelLabel || row.commLinkChannel || "";
+    },
+    splitChannels: function (text) {
+      if (!text) return [];
+      return text.split(/[、,；;]/).map(function (s) { return s.trim(); }).filter(Boolean);
+    },
+    targetDisplayLabel: function (targetId, targetType, targetTypeLabelText, freqMhz) {
+      var type = targetTypeLabelText || targetTypeLabel(targetType);
+      var base = type && type !== "—" ? targetId + "-" + type : targetId;
+      var f = formatFreq(freqMhz);
+      return f && f !== "—" ? base + " " + f : base;
+    },
+    applyRowspan: function (list, keyFn, showField, spanField) {
+      var i = 0;
+      while (i < list.length) {
+        var key = keyFn(list[i]);
+        var j = i + 1;
+        while (j < list.length && keyFn(list[j]) === key) j++;
+        var span = j - i;
+        list[i][showField] = true;
+        list[i][spanField] = span;
+        for (var k = i + 1; k < j; k++) {
+          list[k][showField] = false;
+          list[k][spanField] = 1;
+        }
+        i = j;
+      }
+    },
+    scheduleRender: function () {
+      var self = this;
+      this.$nextTick(function () {
+        self.render();
+      });
+    },
+    disposeAll: function () {
+      if (this.instTarget) {
+        this.instTarget.dispose();
+        this.instTarget = null;
+      }
+      if (this.instComm) {
+        this.instComm.dispose();
+        this.instComm = null;
+      }
+    },
+    render: function () {
+      this.disposeAll();
+      if (!this.rows || !this.rows.length) return;
 
-function resizeCharts() {
-  instTarget?.resize();
-  instComm?.resize();
-}
+      var byType = {};
+      var byComm = {};
+      var self = this;
 
-function getChartImages() {
-  const out = [];
-  for (const inst of [instTarget, instComm]) {
-    if (inst) {
-      out.push(inst.getDataURL({ type: "png", pixelRatio: 2, backgroundColor: "#fff" }));
-    } else {
+      this.rows.forEach(function (r) {
+        var tt = r.targetType || "UNKNOWN";
+        byType[tt] = (byType[tt] || 0) + 1;
+        var cl = self.channelLabel(r) || "未研判";
+        byComm[cl] = (byComm[cl] || 0) + 1;
+      });
+
+      if (this.$refs.chartTarget) {
+        this.instTarget = initCet36Chart(this.$refs.chartTarget);
+        this.instTarget.setOption(applyCet36Theme({
+          color: CET36_CHART_COLORS,
+          title: { text: "目标类型分布", left: "center", textStyle: { fontSize: 14 } },
+          tooltip: { trigger: "item" },
+          series: [{
+            type: "pie",
+            radius: "55%",
+            data: Object.entries(byType).map(function (entry) {
+              return { name: targetTypeLabel(entry[0]), value: entry[1] };
+            })
+          }]
+        }));
+      }
+
+      if (this.$refs.chartComm) {
+        this.instComm = initCet36Chart(this.$refs.chartComm);
+        var entries = Object.entries(byComm).sort(function (a, b) { return b[1] - a[1]; }).slice(0, 12);
+        this.instComm.setOption(applyCet36Theme({
+          color: CET36_CHART_COLORS,
+          title: { text: "波道分布（Top12）", left: "center", textStyle: { fontSize: 14 } },
+          tooltip: { trigger: "axis" },
+          grid: { left: 48, right: 16, bottom: 72, top: 48 },
+          xAxis: {
+            type: "category",
+            data: entries.map(function (e) { return e[0]; }),
+            axisLabel: { rotate: 35, fontSize: 10 }
+          },
+          yAxis: { type: "value", name: "目标数" },
+          series: [{ type: "bar", data: entries.map(function (e) { return e[1]; }) }]
+        }));
+      }
+    },
+    resizeCharts: function () {
+      if (this.instTarget) this.instTarget.resize();
+      if (this.instComm) this.instComm.resize();
+    },
+    getChartImages: function () {
+      var out = [];
+      var insts = [this.instTarget, this.instComm];
+      for (var i = 0; i < insts.length; i++) {
+        if (insts[i]) {
+          out.push(insts[i].getDataURL({ type: "png", pixelRatio: 2, backgroundColor: "#17182c" }));
+        } else {
+          out.push(null);
+        }
+      }
       out.push(null);
+      return out;
     }
   }
-  out.push(null);
-  return out;
-}
-
-defineExpose({ getChartImages });
-
-watch(() => props.rows, () => render());
-
-onMounted(() => {
-  render();
-  window.addEventListener("resize", resizeCharts);
-});
-
-onBeforeUnmount(() => {
-  window.removeEventListener("resize", resizeCharts);
-  disposeAll();
-});
+};
 </script>
 
 <style scoped>
@@ -370,31 +362,32 @@ onBeforeUnmount(() => {
 }
 .chart-box {
   height: 280px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--theme-border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--theme-bg-panel);
 }
 .chart-desc {
   margin: 8px 4px 0;
   font-size: 12px;
-  color: #6b7280;
+  color: var(--theme-text-muted);
   line-height: 1.45;
 }
 .channel-cross {
   grid-column: 1 / -1;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--theme-border);
   border-radius: 8px;
   padding: 12px 14px;
-  background: #fafafa;
+  background: var(--theme-bg-deep);
 }
 .channel-cross h4 {
   margin: 0 0 4px;
   font-size: 14px;
+  color: var(--theme-text-primary);
 }
 .section-desc {
   margin: 0 0 12px;
   font-size: 12px;
-  color: #6b7280;
+  color: var(--theme-text-muted);
 }
 .cross-grid {
   display: grid;
@@ -410,14 +403,15 @@ onBeforeUnmount(() => {
   }
 }
 .cross-panel {
-  background: #fff;
-  border: 1px solid #e5e7eb;
+  background: var(--theme-bg-panel);
+  border: 1px solid var(--theme-border);
   border-radius: 6px;
   padding: 8px;
 }
 .cross-panel h5 {
   margin: 0 0 8px;
   font-size: 13px;
+  color: var(--theme-text-primary);
 }
 .list-scroll {
   max-height: 360px;
@@ -430,57 +424,31 @@ onBeforeUnmount(() => {
 }
 .merge-table th,
 .merge-table td {
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--theme-border);
   padding: 5px 8px;
   text-align: left;
   vertical-align: middle;
+  color: var(--theme-text-table);
 }
 .merge-table th {
-  background: #f9fafb;
+  background: var(--theme-bg-table-header);
   font-weight: 600;
+  color: var(--theme-text-table-header);
 }
 .merge-cell {
-  background: #fafafa;
+  background: var(--theme-bg-panel-alt);
   font-weight: 500;
   white-space: nowrap;
+  color: var(--theme-text-secondary);
 }
 .empty {
-  color: #9ca3af;
+  color: var(--theme-text-muted);
   font-size: 12px;
   margin: 0;
 }
 .matrix-scroll { overflow-x: auto; }
-.channel-matrix {
-  border-collapse: collapse;
-  font-size: 12px;
-  min-width: 100%;
-  background: #fff;
-}
-.channel-matrix th,
-.channel-matrix td {
-  border: 1px solid #e5e7eb;
-  padding: 6px 10px;
-  text-align: center;
-  white-space: nowrap;
-}
-.matrix-corner,
-.matrix-row-head {
-  text-align: left;
-  background: #f3f4f6;
-  font-weight: 600;
-  color: #374151;
-  position: sticky;
-  left: 0;
-  z-index: 1;
-}
-.matrix-col-head {
-  background: #eff6ff;
-  color: #1e40af;
-  font-weight: 600;
-}
-.matrix-cell { color: #9ca3af; min-width: 48px; }
-.matrix-cell.occupied {
-  color: #059669;
+.occupied {
+  color: #91cc75;
   font-weight: 700;
   font-size: 14px;
 }

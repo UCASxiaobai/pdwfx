@@ -1,0 +1,105 @@
+// cet36 主题 CSS 变量 — pdwfx 独立 frontend
+:root,
+html[data-theme='dark'] {
+  --theme-bg-primary: #17182c;
+  --theme-bg-secondary: #001322;
+  --theme-bg-tertiary: #1b3c52;
+  --theme-bg-panel: #162e47;
+  --theme-bg-panel-alt: #1b2f47;
+  --theme-bg-hover: #1c2534;
+  --theme-bg-deep: #151a32;
+  --theme-bg-input: #001322;
+  --theme-bg-disabled: #1b2f47;
+  --theme-bg-table-header: rgba(0, 105, 135, 0.4);
+  --theme-bg-table-row: rgba(0, 105, 139, 0.035);
+  --theme-bg-table-hover: rgba(0, 105, 139, 1);
+  --theme-bg-table-current: rgba(0, 105, 139, 0.53);
+  --theme-bg-table-fixed: #043b57;
+  --theme-bg-pagination: #0e3751;
+  --theme-bg-button: #1d344d;
+
+  --theme-button-primary-bg: #1d344d;
+  --theme-button-primary-text: #01cde0;
+  --theme-button-primary-border: #004864;
+  --theme-button-primary-hover-bg: #243f5c;
+  --theme-button-primary-hover-text: #ffffff;
+  --theme-button-default-bg: #1b3c52;
+  --theme-button-default-text: #30d2f2;
+  --theme-button-default-border: #004864;
+
+  --theme-border: #2d6c83;
+  --theme-border-light: #004864;
+  --theme-border-accent: #00698b;
+  --theme-border-input: #004864;
+  --theme-border-disabled: #1f3b53;
+  --theme-border-focus: #2fd2f1;
+
+  --theme-text-primary: #ffffff;
+  --theme-text-secondary: #b3d2d5;
+  --theme-text-muted: rgba(206, 239, 240, 0.7);
+  --theme-text-accent: #51e9ff;
+  --theme-text-highlight: #30d2f2;
+  --theme-text-link: #2fd2f1;
+  --theme-text-label: #b3d2d5;
+  --theme-text-disabled: #327d94;
+  --theme-text-table: #b3d2d5;
+  --theme-text-table-header: #00d5e8;
+
+  --theme-accent: #00b9cf;
+  --theme-accent-alt: #01cde0;
+  --theme-accent-bright: #2fd2f2;
+  --theme-menu-active: #00f5ff;
+  --theme-menu-text: #e6e6e6;
+  --theme-menu-active-text: #00b9cf;
+
+  --theme-header-bg: #17182c;
+  --theme-header-text: #ffffff;
+  --theme-header-gradient-start: #26bfde;
+  --theme-header-gradient-end: #ffffff;
+  --theme-header-group-bg: #1b3c52;
+  --theme-header-group-border: #00698b;
+  --theme-header-icon: #00b9cf;
+  --theme-header-bg-image: url('../assets/cet36/img/nav.png');
+
+  --theme-sidebar-menu-border: #162e47;
+  --theme-shadow: none;
+  --theme-body-bg: #17182c;
+}
+
+html {
+  background-color: var(--theme-body-bg);
+  color: var(--theme-text-primary);
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: "Microsoft YaHei", Arial, sans-serif;
+  background-color: var(--theme-body-bg);
+  color: var(--theme-text-primary);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #30d2f2;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: #2d6c83;
+}
+
+a {
+  color: var(--theme-text-link);
+}

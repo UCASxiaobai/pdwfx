@@ -1,10 +1,11 @@
+<!-- vue2-done -->
 <template>
   <div class="hop-viz">
     <div class="viz-head">
       <h4>换频研判轨迹</h4>
       <span v-if="view" class="viz-meta">
-        {{ plottedCount }} / {{ view.trackCount ?? 0 }} 个目标 · 跨频
-        {{ view.hopTrackCount ?? 0 }}
+        {{ plottedCount }} / {{ view.trackCount != null ? view.trackCount : 0 }} 个目标 · 跨频
+        {{ view.hopTrackCount != null ? view.hopTrackCount : 0 }}
         <template v-if="view.noiseSkippedCount">
           · 已隐藏噪声 {{ view.noiseSkippedCount }}
         </template>
@@ -15,16 +16,15 @@
       </span>
     </div>
     <div v-if="view" class="type-filters">
-      <button
+      <el-button
         v-for="opt in typeFilters"
         :key="opt.value || 'all'"
-        type="button"
-        class="type-btn"
-        :class="{ active: typeFilter === opt.value }"
+        size="mini"
+        :type="typeFilter === opt.value ? 'primary' : 'default'"
         @click="typeFilter = opt.value"
       >
         {{ opt.label }}
-      </button>
+      </el-button>
     </div>
     <div v-if="!view" class="viz-empty">暂无换频研判数据（需重新分析本批）</div>
     <div v-else class="panel">
@@ -53,41 +53,27 @@
           横轴为 D01–D06。已分析频点直接标注；仅换频衔接、未入 TOP-K 场景的频点标为「换频…(未入场景)」。
         </p>
         <div class="matrix-scroll">
-          <table class="channel-matrix">
-            <thead>
-              <tr>
-                <th class="matrix-corner">目标 \\ 波道</th>
-                <th
-                  v-for="col in channelMatrix.columns"
-                  :key="col.id"
-                  class="matrix-col-head"
-                >
-                  {{ col.label }}
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="row in channelMatrix.rows" :key="row.key">
-                <th class="matrix-row-head">{{ row.label }}</th>
-                <td
-                  v-for="(checked, ci) in row.cells"
-                  :key="ci"
-                  class="matrix-cell"
-                  :class="{ occupied: checked }"
-                >
-                  {{ checked ? "✓" : "" }}
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          <el-table :data="channelMatrix.rows" size="mini" border class="channel-matrix">
+            <el-table-column prop="label" label="目标 \ 波道" min-width="120" fixed />
+            <el-table-column
+              v-for="(col, ci) in channelMatrix.columns"
+              :key="col.id"
+              :label="col.label"
+              min-width="72"
+              align="center"
+            >
+              <template slot-scope="scope">
+                <span :class="{ occupied: scope.row.cells[ci] }">{{ scope.row.cells[ci] ? "✓" : "" }}</span>
+              </template>
+            </el-table-column>
+          </el-table>
         </div>
       </div>
     </div>
   </div>
 </template>
 
-<script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+<script>
 import * as echarts from "echarts";
 import {
   AZIMUTH_Y_AXIS,
@@ -100,334 +86,342 @@ import {
   roundFreq3,
   scatterTimeRange,
   timeAxisPad
-} from "../scene/importScatterChart.js";
-import { buildHopTargetChannelMatrix, formatHopTrackFreqLabel, HOP_TYPE_FILTERS, hopTrackMatchesType } from "../scene/hopChannelMatrix.js";
+} from "@/scene/importScatterChart.js";
+import { buildHopTargetChannelMatrix, formatHopTrackFreqLabel, HOP_TYPE_FILTERS, hopTrackMatchesType } from "@/scene/hopChannelMatrix.js";
 
-const props = defineProps({
-  hoppingTrackViews: { type: Array, default: () => [] },
-  importScatter: { type: Object, default: null },
-  reportRows: { type: Array, default: () => [] },
-  showChannelMatrix: { type: Boolean, default: true }
-});
-
-const chartEl = ref(null);
-let chartInst = null;
-const omittedFreqUsed = ref(false);
-const typeFilter = ref("");
-const typeFilters = HOP_TYPE_FILTERS;
-
-const view = computed(() => {
-  const list = props.hoppingTrackViews || [];
-  if (!list.length) return null;
-  const unified = list.find((v) => v?.unified) || list[0];
-  if (!unified?.tracks?.length) return null;
-  return unified;
-});
-
-const plottedTracks = computed(() => {
-  const tracks = (view.value?.tracks || []).filter((t) => !t.noiseCandidate);
-  return tracks.filter((t) => hopTrackMatchesType(t, typeFilter.value));
-});
-
-const plottedCount = computed(() => plottedTracks.value.length);
-
-const freqColorMap = computed(() => resolveFreqColorMap(view.value, props.importScatter));
-
-const freqLegendCount = computed(() => freqColorMap.value.size);
-
-const panelMeta = computed(() => {
-  const v = view.value;
-  if (!v) return "";
-  const n = plottedCount.value;
-  const total = v.trackCount ?? 0;
-  const countText = typeFilter.value && n !== total ? `${n}/${total}` : `${total}`;
-  return `${v.timeRange || ""} · ${countText} 条轨迹`;
-});
-
-const channelMatrix = computed(() => {
-  if (!view.value) {
-    return buildHopTargetChannelMatrix(null, props.reportRows);
-  }
-  return buildHopTargetChannelMatrix(
-    { ...view.value, tracks: plottedTracks.value },
-    props.reportRows
-  );
-});
-
-watch(
-  () => [props.hoppingTrackViews, props.importScatter],
-  async (curr, prev) => {
-    const hopSame = curr?.[0] === prev?.[0];
-    const scatterSame = curr?.[1] === prev?.[1];
-    if (prev && hopSame && scatterSame) return;
-    await nextTick();
-    renderChart(false);
+export default {
+  name: "SceneFreqHopTrackViz",
+  props: {
+    hoppingTrackViews: { type: Array, default: function () { return []; } },
+    importScatter: { type: Object, default: null },
+    reportRows: { type: Array, default: function () { return []; } },
+    showChannelMatrix: { type: Boolean, default: true }
   },
-  { deep: true }
-);
-
-watch(typeFilter, async () => {
-  await nextTick();
-  renderChart(true);
-});
-
-function resolveFreqColorMap(v, scatter) {
-  const fromScatter = buildFreqColorMapFromScatter(scatter);
-  if (fromScatter.size) return fromScatter;
-  return buildFreqColorMapByPointRank(collectFreqCounts(v));
-}
-
-function collectFreqCounts(v) {
-  const counts = new Map();
-  for (const t of v?.tracks || []) {
-    if (t.noiseCandidate) continue;
-    for (const p of t.points || []) {
-      const f = roundFreq3(p.freqMhz);
-      if (f == null) continue;
-      counts.set(f, (counts.get(f) || 0) + 1);
+  data: function () {
+    return {
+      omittedFreqUsed: false,
+      typeFilter: "",
+      typeFilters: HOP_TYPE_FILTERS,
+      IMPORT_SCATTER_CHART_HEIGHT: IMPORT_SCATTER_CHART_HEIGHT,
+      AZIMUTH_Y_AXIS: AZIMUTH_Y_AXIS,
+      MAX_IMPORT_SCATTER_FREQS: MAX_IMPORT_SCATTER_FREQS
+    };
+  },
+  computed: {
+    view: function () {
+      var list = this.hoppingTrackViews || [];
+      if (!list.length) return null;
+      var unified = list.find(function (v) { return v && v.unified; }) || list[0];
+      if (!unified || !unified.tracks || !unified.tracks.length) return null;
+      return unified;
+    },
+    plottedTracks: function () {
+      var self = this;
+      var tracks = ((this.view && this.view.tracks) || []).filter(function (t) { return !t.noiseCandidate; });
+      return tracks.filter(function (t) { return hopTrackMatchesType(t, self.typeFilter); });
+    },
+    plottedCount: function () {
+      return this.plottedTracks.length;
+    },
+    freqColorMap: function () {
+      return this.resolveFreqColorMap(this.view, this.importScatter);
+    },
+    freqLegendCount: function () {
+      return this.freqColorMap.size;
+    },
+    panelMeta: function () {
+      var v = this.view;
+      if (!v) return "";
+      var n = this.plottedCount;
+      var total = v.trackCount != null ? v.trackCount : 0;
+      var countText = this.typeFilter && n !== total ? n + "/" + total : String(total);
+      return (v.timeRange || "") + " · " + countText + " 条轨迹";
+    },
+    channelMatrix: function () {
+      if (!this.view) {
+        return buildHopTargetChannelMatrix(null, this.reportRows);
+      }
+      return buildHopTargetChannelMatrix(
+        Object.assign({}, this.view, { tracks: this.plottedTracks }),
+        this.reportRows
+      );
     }
-  }
-  return [...counts.entries()].map(([freqMhz, count]) => ({ freqMhz, count }));
-}
-
-function colorForFreq(colorByFreq, freq) {
-  if (freq == null) return OMITTED_FREQ_COLOR;
-  if (colorByFreq.has(freq)) return colorByFreq.get(freq);
-  return OMITTED_FREQ_COLOR;
-}
-
-function formatFreqLabel(f) {
-  if (f == null) return "未知频点";
-  return `${Number(f).toFixed(3)} MHz`;
-}
-
-function targetBaseName(t) {
-  const base = t.label || `目标${t.trackId}`;
-  const type = t.targetTypeLabel || "";
-  let withType = base;
-  if (type && type !== "—" && !String(base).includes(type)) {
-    withType = `${base}-${type}`;
-  }
-  return formatHopTrackFreqLabel(withType, t, props.reportRows);
-}
-
-async function renderChart(resetInteraction) {
-  if (!chartEl.value || !view.value) {
-    chartInst?.dispose();
-    chartInst = null;
-    return;
-  }
-  if (!chartInst) {
-    chartInst = echarts.init(chartEl.value);
-  }
-  let legendSelected = null;
-  let zoom = null;
-  if (!resetInteraction) {
-    try {
-      const cur = chartInst.getOption?.();
-      legendSelected = cur?.legend?.[0]?.selected || null;
-      zoom = (cur?.dataZoom || []).map((z) => ({ start: z.start, end: z.end }));
-    } catch (_) { /* ignore */ }
-  }
-  const opt = buildOption(view.value, freqColorMap.value, plottedTracks.value);
-  // 保留用户图例勾选与 dataZoom，避免无数据变化时的误触重绘清状态
-  if (legendSelected) {
-    opt.legend = { ...(opt.legend || {}), selected: legendSelected };
-  }
-  if (zoom?.length) {
-    opt.dataZoom = (opt.dataZoom || []).map((z, i) => ({
-      ...z,
-      start: zoom[i]?.start ?? z.start,
-      end: zoom[i]?.end ?? z.end
-    }));
-  }
-  chartInst.setOption(opt, true);
-  await nextTick();
-  chartInst.resize();
-}
-
-function normalizeBearing(deg) {
-  let d = Number(deg);
-  if (!Number.isFinite(d)) return d;
-  d %= 360;
-  if (d < 0) d += 360;
-  return d;
-}
-
-function resolveXRange(v) {
-  const fromScatter = scatterTimeRange(props.importScatter);
-  if (fromScatter) return fromScatter;
-  const xMin = Number(v.xMin);
-  const xMax = Number(v.xMax);
-  if (Number.isFinite(xMin) && Number.isFinite(xMax)) {
-    const pad = timeAxisPad(xMin, xMax);
-    return { xMin: xMin - pad, xMax: xMax + pad };
-  }
-  return { xMin: undefined, xMax: undefined };
-}
-
-function buildOption(v, colorByFreq, tracks) {
-  const series = [];
-  const legendNames = [];
-  let usedOmitted = false;
-
-  const pickColor = (freq) => {
-    const c = colorForFreq(colorByFreq, freq);
-    if (freq != null && !colorByFreq.has(freq)) usedOmitted = true;
-    return c;
-  };
-
-  for (const t of tracks || []) {
-    const base = targetBaseName(t);
-    const normalizedPts = (t.points || []).map((p) => ({
-      ...p,
-      y: normalizeBearing(p.y)
-    }));
-    const segments = splitByFrequency(normalizedPts);
-    let prevLast = null;
-    for (let i = 0; i < segments.length; i++) {
-      const seg = segments[i];
-      const color = pickColor(seg.freq);
-      const omittedTag =
-        seg.freq != null && !colorByFreq.has(seg.freq) ? "（概览未标绘）" : "";
-      const name = `${base} · ${formatFreqLabel(seg.freq)}${omittedTag}`;
-      if (!legendNames.includes(name)) legendNames.push(name);
-
-      if (prevLast && seg.points.length) {
-        series.push({
-          name: `${base}·衔接`,
-          type: "line",
-          showSymbol: false,
-          lineStyle: { width: 1, color: "#9ca3af", type: "dashed", opacity: 0.7 },
-          data: [prevLast, seg.points[0]],
-          tooltip: { show: false },
-          legendHoverLink: false
+  },
+  watch: {
+    hoppingTrackViews: { handler: "onDataChange", deep: true },
+    importScatter: "onDataChange",
+    typeFilter: "onTypeFilterChange"
+  },
+  mounted: function () {
+    var self = this;
+    this.$nextTick(function () {
+      self.renderChart(false);
+    });
+    window.addEventListener("resize", this.onResize);
+  },
+  beforeDestroy: function () {
+    window.removeEventListener("resize", this.onResize);
+    if (this.chartInst) {
+      this.chartInst.dispose();
+      this.chartInst = null;
+    }
+  },
+  methods: {
+    onDataChange: function () {
+      var self = this;
+      this.$nextTick(function () {
+        self.renderChart(false);
+      });
+    },
+    onTypeFilterChange: function () {
+      var self = this;
+      this.$nextTick(function () {
+        self.renderChart(true);
+      });
+    },
+    resolveFreqColorMap: function (v, scatter) {
+      var fromScatter = buildFreqColorMapFromScatter(scatter);
+      if (fromScatter.size) return fromScatter;
+      return buildFreqColorMapByPointRank(this.collectFreqCounts(v));
+    },
+    collectFreqCounts: function (v) {
+      var counts = new Map();
+      (v && v.tracks ? v.tracks : []).forEach(function (t) {
+        if (t.noiseCandidate) return;
+        (t.points || []).forEach(function (p) {
+          var f = roundFreq3(p.freqMhz);
+          if (f == null) return;
+          counts.set(f, (counts.get(f) || 0) + 1);
+        });
+      });
+      return Array.from(counts.entries()).map(function (entry) {
+        return { freqMhz: entry[0], count: entry[1] };
+      });
+    },
+    colorForFreq: function (colorByFreq, freq) {
+      if (freq == null) return OMITTED_FREQ_COLOR;
+      if (colorByFreq.has(freq)) return colorByFreq.get(freq);
+      return OMITTED_FREQ_COLOR;
+    },
+    formatFreqLabel: function (f) {
+      if (f == null) return "未知频点";
+      return Number(f).toFixed(3) + " MHz";
+    },
+    targetBaseName: function (t) {
+      var base = t.label || "目标" + t.trackId;
+      var type = t.targetTypeLabel || "";
+      var withType = base;
+      if (type && type !== "—" && String(base).indexOf(type) < 0) {
+        withType = base + "-" + type;
+      }
+      return formatHopTrackFreqLabel(withType, t, this.reportRows);
+    },
+    renderChart: function (resetInteraction) {
+      var self = this;
+      var el = this.$refs.chartEl;
+      if (!el || !this.view) {
+        if (this.chartInst) {
+          this.chartInst.dispose();
+          this.chartInst = null;
+        }
+        return Promise.resolve();
+      }
+      if (!this.chartInst) {
+        this.chartInst = echarts.init(el);
+      }
+      var legendSelected = null;
+      var zoom = null;
+      if (!resetInteraction && this.chartInst.getOption) {
+        try {
+          var cur = this.chartInst.getOption();
+          legendSelected = (cur.legend && cur.legend[0] && cur.legend[0].selected) || null;
+          zoom = (cur.dataZoom || []).map(function (z) { return { start: z.start, end: z.end }; });
+        } catch (_) { /* ignore */ }
+      }
+      var opt = this.buildOption(this.view, this.freqColorMap, this.plottedTracks);
+      if (legendSelected) {
+        opt.legend = Object.assign({}, opt.legend || {}, { selected: legendSelected });
+      }
+      if (zoom && zoom.length) {
+        opt.dataZoom = (opt.dataZoom || []).map(function (z, i) {
+          return Object.assign({}, z, {
+            start: (zoom[i] && zoom[i].start != null) ? zoom[i].start : z.start,
+            end: (zoom[i] && zoom[i].end != null) ? zoom[i].end : z.end
+          });
         });
       }
+      this.chartInst.setOption(opt, true);
+      return this.$nextTick().then(function () {
+        self.chartInst.resize();
+      });
+    },
+    normalizeBearing: function (deg) {
+      var d = Number(deg);
+      if (!Number.isFinite(d)) return d;
+      d %= 360;
+      if (d < 0) d += 360;
+      return d;
+    },
+    resolveXRange: function (v) {
+      var fromScatter = scatterTimeRange(this.importScatter);
+      if (fromScatter) return fromScatter;
+      var xMin = Number(v.xMin);
+      var xMax = Number(v.xMax);
+      if (Number.isFinite(xMin) && Number.isFinite(xMax)) {
+        var pad = timeAxisPad(xMin, xMax);
+        return { xMin: xMin - pad, xMax: xMax + pad };
+      }
+      return { xMin: undefined, xMax: undefined };
+    },
+    buildOption: function (v, colorByFreq, tracks) {
+      var self = this;
+      var series = [];
+      var legendNames = [];
+      var usedOmitted = false;
 
-      series.push({
-        name,
-        type: "line",
-        showSymbol: true,
-        symbolSize: 5,
-        lineStyle: { width: 2, color },
-        itemStyle: { color },
-        data: seg.points
+      var pickColor = function (freq) {
+        var c = self.colorForFreq(colorByFreq, freq);
+        if (freq != null && !colorByFreq.has(freq)) usedOmitted = true;
+        return c;
+      };
+
+      (tracks || []).forEach(function (t) {
+        var base = self.targetBaseName(t);
+        var normalizedPts = (t.points || []).map(function (p) {
+          return Object.assign({}, p, { y: self.normalizeBearing(p.y) });
+        });
+        var segments = self.splitByFrequency(normalizedPts);
+        var prevLast = null;
+        for (var i = 0; i < segments.length; i++) {
+          var seg = segments[i];
+          var color = pickColor(seg.freq);
+          var omittedTag = seg.freq != null && !colorByFreq.has(seg.freq) ? "（概览未标绘）" : "";
+          var name = base + " · " + self.formatFreqLabel(seg.freq) + omittedTag;
+          if (legendNames.indexOf(name) < 0) legendNames.push(name);
+
+          if (prevLast && seg.points.length) {
+            series.push({
+              name: base + "·衔接",
+              type: "line",
+              showSymbol: false,
+              lineStyle: { width: 1, color: "#9ca3af", type: "dashed", opacity: 0.7 },
+              data: [prevLast, seg.points[0]],
+              tooltip: { show: false },
+              legendHoverLink: false
+            });
+          }
+
+          series.push({
+            name: name,
+            type: "line",
+            showSymbol: true,
+            symbolSize: 5,
+            lineStyle: { width: 2, color: color },
+            itemStyle: { color: color },
+            data: seg.points
+          });
+          prevLast = seg.points[seg.points.length - 1];
+        }
+        if (!segments.length) {
+          var fallbackColor = t.color || OMITTED_FREQ_COLOR;
+          var fallbackName = base;
+          if (legendNames.indexOf(fallbackName) < 0) legendNames.push(fallbackName);
+          series.push({
+            name: fallbackName,
+            type: "line",
+            showSymbol: true,
+            symbolSize: 5,
+            lineStyle: { width: 2, color: fallbackColor },
+            itemStyle: { color: fallbackColor },
+            data: normalizedPts.map(function (p) { return [p.x, p.y]; })
+          });
+        }
       });
-      prevLast = seg.points[seg.points.length - 1];
-    }
-    if (!segments.length) {
-      const color = t.color || OMITTED_FREQ_COLOR;
-      const name = base;
-      if (!legendNames.includes(name)) legendNames.push(name);
-      const data = normalizedPts.map((p) => [p.x, p.y]);
-      series.push({
-        name,
-        type: "line",
-        showSymbol: true,
-        symbolSize: 5,
-        lineStyle: { width: 2, color },
-        itemStyle: { color },
-        data
+
+      this.omittedFreqUsed = usedOmitted;
+      var range = this.resolveXRange(v);
+
+      return {
+        tooltip: {
+          trigger: "axis",
+          formatter: function (params) {
+            if (!params || !params.length) return "";
+            var visible = params.filter(function (p) {
+              return !String(p.seriesName || "").endsWith("·衔接");
+            });
+            if (!visible.length) return "";
+            var t = self.formatClock(visible[0].value[0]);
+            var lines = visible.map(function (p) {
+              return p.marker + p.seriesName + ": " + Number(p.value[1]).toFixed(1) + "°";
+            });
+            return t + "<br/>" + lines.join("<br/>");
+          }
+        },
+        legend: {
+          top: 4,
+          left: "center",
+          type: "scroll",
+          data: legendNames,
+          textStyle: { fontSize: 11 }
+        },
+        grid: Object.assign({}, IMPORT_SCATTER_GRID),
+        xAxis: {
+          type: "time",
+          name: "时间",
+          nameLocation: "middle",
+          nameGap: 38,
+          min: range.xMin,
+          max: range.xMax,
+          axisLabel: { fontSize: 10, hideOverlap: true }
+        },
+        yAxis: {
+          type: "value",
+          name: "方位 (°)",
+          min: AZIMUTH_Y_AXIS.min,
+          max: AZIMUTH_Y_AXIS.max,
+          interval: AZIMUTH_Y_AXIS.interval,
+          nameTextStyle: { fontSize: 11 },
+          axisLabel: { fontSize: 11 },
+          splitLine: { lineStyle: { color: "rgba(45, 108, 131, 0.35)", type: "dashed" } }
+        },
+        dataZoom: [
+          { type: "inside", xAxisIndex: 0 },
+          { type: "slider", xAxisIndex: 0, height: 20, bottom: 10 }
+        ],
+        series: series
+      };
+    },
+    splitByFrequency: function (points) {
+      var self = this;
+      var segs = [];
+      var cur = null;
+      (points || []).forEach(function (p) {
+        var f = roundFreq3(p.freqMhz);
+        var xy = [p.x, self.normalizeBearing(p.y)];
+        if (f == null) {
+          if (!cur) {
+            cur = { freq: null, points: [] };
+            segs.push(cur);
+          }
+          cur.points.push(xy);
+          return;
+        }
+        if (!cur || cur.freq !== f) {
+          cur = { freq: f, points: [] };
+          segs.push(cur);
+        }
+        cur.points.push(xy);
       });
+      return segs.filter(function (s) { return s.points.length; });
+    },
+    formatClock: function (ms) {
+      return new Date(ms).toLocaleTimeString("zh-CN", { hour12: false });
+    },
+    onResize: function () {
+      if (this.chartInst) this.chartInst.resize();
     }
   }
-
-  omittedFreqUsed.value = usedOmitted;
-  const { xMin, xMax } = resolveXRange(v);
-
-  return {
-    tooltip: {
-      trigger: "axis",
-      formatter(params) {
-        if (!params?.length) return "";
-        const visible = params.filter((p) => !String(p.seriesName || "").endsWith("·衔接"));
-        if (!visible.length) return "";
-        const t = formatClock(visible[0].value[0]);
-        const lines = visible.map(
-          (p) => `${p.marker}${p.seriesName}: ${Number(p.value[1]).toFixed(1)}°`
-        );
-        return `${t}<br/>${lines.join("<br/>")}`;
-      }
-    },
-    legend: {
-      top: 4,
-      left: "center",
-      type: "scroll",
-      data: legendNames,
-      textStyle: { fontSize: 11 }
-    },
-    grid: { ...IMPORT_SCATTER_GRID },
-    xAxis: {
-      type: "time",
-      name: "时间",
-      nameLocation: "middle",
-      nameGap: 38,
-      min: xMin,
-      max: xMax,
-      axisLabel: { fontSize: 10, hideOverlap: true }
-    },
-    yAxis: {
-      type: "value",
-      name: "方位 (°)",
-      min: AZIMUTH_Y_AXIS.min,
-      max: AZIMUTH_Y_AXIS.max,
-      interval: AZIMUTH_Y_AXIS.interval,
-      nameTextStyle: { fontSize: 11 },
-      axisLabel: { fontSize: 11 },
-      splitLine: { lineStyle: { color: "#e5e7eb", type: "dashed" } }
-    },
-    dataZoom: [
-      { type: "inside", xAxisIndex: 0 },
-      { type: "slider", xAxisIndex: 0, height: 20, bottom: 10 }
-    ],
-    series
-  };
-}
-
-/** 按连续同频切段，便于分段着色 */
-function splitByFrequency(points) {
-  const segs = [];
-  let cur = null;
-  for (const p of points || []) {
-    const f = roundFreq3(p.freqMhz);
-    const xy = [p.x, normalizeBearing(p.y)];
-    if (f == null) {
-      if (!cur) {
-        cur = { freq: null, points: [] };
-        segs.push(cur);
-      }
-      cur.points.push(xy);
-      continue;
-    }
-    if (!cur || cur.freq !== f) {
-      cur = { freq: f, points: [] };
-      segs.push(cur);
-    }
-    cur.points.push(xy);
-  }
-  return segs.filter((s) => s.points.length);
-}
-
-function formatClock(ms) {
-  return new Date(ms).toLocaleTimeString("zh-CN", { hour12: false });
-}
-
-function onResize() {
-  chartInst?.resize();
-}
-
-onMounted(async () => {
-  await nextTick();
-  renderChart(false);
-  window.addEventListener("resize", onResize);
-});
-
-onBeforeUnmount(() => {
-  window.removeEventListener("resize", onResize);
-  chartInst?.dispose();
-  chartInst = null;
-});
+};
 </script>
 
 <style scoped>
@@ -439,34 +433,19 @@ onBeforeUnmount(() => {
   gap: 8px;
   margin-bottom: 8px;
 }
-.viz-head h4 { margin: 0; font-size: 14px; }
-.viz-meta { font-size: 12px; color: #6b7280; }
+.viz-head h4 { margin: 0; font-size: 14px; color: var(--theme-text-primary); }
+.viz-meta { font-size: 12px; color: var(--theme-text-muted); }
 .type-filters {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin: 0 0 10px;
 }
-.type-btn {
-  border: 1px solid #d1d5db;
-  background: #fff;
-  color: #374151;
-  border-radius: 999px;
-  padding: 4px 12px;
-  font-size: 12px;
-  cursor: pointer;
-}
-.type-btn:hover { border-color: #93c5fd; color: #1d4ed8; }
-.type-btn.active {
-  background: #1d4ed8;
-  border-color: #1d4ed8;
-  color: #fff;
-}
 .panel {
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--theme-border);
   border-radius: 8px;
   padding: 10px 12px;
-  background: #fafafa;
+  background: var(--theme-bg-deep);
 }
 .panel-title {
   display: flex;
@@ -475,66 +454,39 @@ onBeforeUnmount(() => {
   align-items: baseline;
   font-size: 13px;
   margin-bottom: 6px;
+  color: var(--theme-text-primary);
 }
-.panel-title span { color: #6b7280; font-size: 12px; }
+.panel-title span { color: var(--theme-text-muted); font-size: 12px; }
 .chart-box {
   width: 100%;
-  background: #fff;
+  background: var(--theme-bg-panel);
   border-radius: 6px;
 }
-.viz-empty { color: #6b7280; font-size: 13px; padding: 12px 0; }
-.scene-note { font-size: 12px; color: #4b5563; margin: 8px 0 0; }
-.hint { font-size: 12px; color: #9ca3af; margin: 6px 0 0; }
+.viz-empty { color: var(--theme-text-muted); font-size: 13px; padding: 12px 0; }
+.scene-note { font-size: 12px; color: var(--theme-text-secondary); margin: 8px 0 0; }
+.hint { font-size: 12px; color: var(--theme-text-muted); margin: 6px 0 0; }
 .channel-matrix-block {
   margin: 12px 0 0;
   padding: 10px 12px;
-  background: #fff;
-  border: 1px solid #e5e7eb;
+  background: var(--theme-bg-panel);
+  border: 1px solid var(--theme-border);
   border-radius: 8px;
 }
 .matrix-title {
   margin: 0 0 4px;
   font-size: 13px;
   font-weight: 600;
-  color: #111827;
+  color: var(--theme-text-primary);
 }
 .matrix-desc {
   margin: 0 0 8px;
   font-size: 11px;
-  color: #6b7280;
+  color: var(--theme-text-muted);
   line-height: 1.45;
 }
 .matrix-scroll { overflow-x: auto; }
-.channel-matrix {
-  border-collapse: collapse;
-  font-size: 12px;
-  min-width: 100%;
-}
-.channel-matrix th,
-.channel-matrix td {
-  border: 1px solid #e5e7eb;
-  padding: 6px 10px;
-  text-align: center;
-  white-space: nowrap;
-}
-.matrix-corner,
-.matrix-row-head {
-  text-align: left;
-  background: #f3f4f6;
-  font-weight: 600;
-  color: #374151;
-  position: sticky;
-  left: 0;
-  z-index: 1;
-}
-.matrix-col-head {
-  background: #eff6ff;
-  color: #1e40af;
-  font-weight: 600;
-}
-.matrix-cell { color: #9ca3af; min-width: 48px; }
-.matrix-cell.occupied {
-  color: #059669;
+.occupied {
+  color: #91cc75;
   font-weight: 700;
   font-size: 14px;
 }

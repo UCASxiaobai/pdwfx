@@ -2,20 +2,25 @@
   "name": "signal-analysis-ui",
   "version": "0.0.1",
   "private": true,
-  "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
+    "dev": "vue-cli-service serve",
+    "build": "vue-cli-service build",
+    "preview": "vue-cli-service serve --mode production"
   },
   "dependencies": {
-    "echarts": "^6.1.0",
-    "ol": "^10.9.0",
-    "vue": "^3.5.17",
+    "color-rgba": "3.0.0",
+    "core-js": "^3.8.3",
+    "echarts": "^5.5.0",
+    "element-ui": "^2.13.2",
+    "ol": "^9.2.4",
+    "vue": "^2.6.14",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^4.6.2",
-    "vite": "^4.5.14"
+    "@vue/cli-plugin-babel": "~4.5.19",
+    "@vue/cli-service": "~4.5.19",
+    "sass": "^1.32.13",
+    "sass-loader": "^10.2.0",
+    "vue-template-compiler": "^2.6.14"
   }
 }

@@ -2,9 +2,9 @@
 export function formatPeriodSecMsUs(periodSec) {
   const n = Number(periodSec);
   if (!Number.isFinite(n) || n < 0) return "—";
-  const totalMicros = Math.round(n * 1_000_000);
-  const sec = Math.floor(totalMicros / 1_000_000);
-  const ms = Math.floor((totalMicros % 1_000_000) / 1000);
+  const totalMicros = Math.round(n * 1000000);
+  const sec = Math.floor(totalMicros / 1000000);
+  const ms = Math.floor((totalMicros % 1000000) / 1000);
   const us = totalMicros % 1000;
   return `${sec}s ${ms}ms ${us}us`;
 }

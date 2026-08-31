@@ -1,13 +1,16 @@
+<!-- vue2-done -->
 <template>
-  <section class="signal-explorer">
-    <div class="explorer-header">
-      <h3>信号分析 · 网络研判</h3>
-      <p class="hint">
-        各优质场景已导出为 CSV 并完成分网研判；左侧选场景与网络，右侧查看目标表与图表。
-      </p>
-    </div>
+  <section class="signal-explorer cet36-panel">
+    <header class="cet36-panel__title">
+      <div>
+        <h3 class="cet36-panel__title-text">信号分析 · 网络研判</h3>
+        <p class="hint">
+          各优质场景已导出为 CSV 并完成分网研判；左侧选场景与网络，右侧查看目标表与图表。
+        </p>
+      </div>
+    </header>
 
-    <div class="explorer-body">
+    <div class="explorer-body cet36-panel__body">
       <aside class="list">
         <label class="scene-pick">
           优质场景
@@ -59,13 +62,13 @@
             <div class="type-line">{{ displayNetworkType(n) }}</div>
             <div>通信: {{ commModeLabel(n.commMode) }}</div>
             <div>
-              侦获 {{ n.signalCount || 0 }} · 目标 {{ n.targetCount || "—" }}
+              侦获 {{ n.signalCount || 0 }} · 目标 {{ n.targetCount != null ? n.targetCount : "—" }}
             </div>
           </div>
         </div>
       </aside>
 
-      <main class="detail" v-if="selected">
+      <main v-if="selected" class="detail">
         <p v-if="detailLoading" class="loading">正在加载网络详情…</p>
         <template v-else>
           <h4>
@@ -73,7 +76,7 @@
             ({{ formatFreq(selected.freq) }} MHz) — {{ commModeLabel(selected.commMode) }}
             <span v-if="selected.commLinkChannelLabel"> — {{ selected.commLinkChannelLabel }}</span>
           </h4>
-          <table>
+          <table class="cet36-table">
             <thead>
               <tr>
                 <th>targetId</th>
@@ -110,12 +113,12 @@
                 <td>{{ formatMetric(t.periodMs, 0) }}</td>
                 <td>{{ formatMetric(t.burstDurationMeanMs, 1) }}</td>
                 <td>{{ formatMetric(t.avgDutyCycle, 1) }}</td>
-                <td>{{ t.burstCount ?? "-" }}</td>
+                <td>{{ t.burstCount != null ? t.burstCount : "-" }}</td>
                 <td>{{ convergenceLabel(t.convergence) }}</td>
                 <td>{{ ellipseLabel(t) }}</td>
                 <td
                   :style="{
-                    color: t.role === 'MASTER' ? '#b91c1c' : '#111827',
+                    color: t.role === 'MASTER' ? '#f78989' : 'var(--theme-text-primary)',
                     fontWeight: t.role === 'MASTER' ? 700 : 400
                   }"
                 >
@@ -155,11 +158,10 @@
   </section>
 </template>
 
-<script setup>
-import { computed, ref, watch } from "vue";
+<script>
 import AnalystWorkbench from "./AnalystWorkbench.vue";
-import { fetchNetworkDetail } from "../scene/sceneApi.js";
-import { sceneTypeLabel, sortScenesForDisplay } from "../scene/sceneFilters.js";
+import { fetchNetworkDetail } from "@/api/pdwfx";
+import { sceneTypeLabel, sortScenesForDisplay } from "@/scene/sceneFilters.js";
 import {
   commModeLabel,
   convergenceLabel,
@@ -173,189 +175,205 @@ import {
   normalizeNetwork,
   targetTypeLabel,
   uniqueValues
-} from "../scene/signalUi.js";
+} from "@/scene/signalUi.js";
 
-const props = defineProps({
-  /** forwardItems: { rank, sceneType, session }[] */
-  sceneItems: { type: Array, default: () => [] },
-  externalTargetFixes: { type: Array, default: () => [] },
-  externalFixMeta: { type: String, default: "" },
-  dfMatchResult: { type: Object, default: null },
-  initialSceneRank: { type: Number, default: null },
-  initialNetworkId: { type: Number, default: null }
-});
-
-const localSceneRank = ref(null);
-const freqSearch = ref("");
-const networkTypeFilter = ref("");
-const commLinkFilter = ref("");
-const targetTypeFilter = ref("");
-const activeNetworkId = ref(null);
-const activeTargetId = ref(null);
-const selected = ref(null);
-const detailLoading = ref(false);
-const workbenchKey = ref("");
-const workbenchRef = ref(null);
-let loadSeq = 0;
-const networkCache = new Map();
-
-const sortedSceneItems = computed(() => sortScenesForDisplay(props.sceneItems));
-
-const currentItem = computed(() => {
-  const want = Number(localSceneRank.value);
-  return sortedSceneItems.value.find((x) => Number(x.rank) === want);
-});
-
-const analysisId = computed(() => currentItem.value?.session?.analysisId || "");
-
-const networks = computed(() => {
-  const list = currentItem.value?.session?.networks || [];
-  return [...list].sort((a, b) => (b.signalCount || 0) - (a.signalCount || 0));
-});
-
-function networkHasTargetType(n, type) {
-  if (type === "GROUND") return (n.groundTargetCount || 0) > 0;
-  if (type === "AWACS") return (n.awacsTargetCount || 0) > 0;
-  if (type === "AIR") return (n.airTargetCount || 0) > 0;
-  return true;
-}
-
-const filteredNetworks = computed(() => {
-  let list = networks.value;
-  const q = freqSearch.value.trim();
-  if (q) {
-    const num = Number(q);
-    const isNum = !Number.isNaN(num);
-    list = list.filter((n) => {
-      if (String(n.networkId) === q) return true;
-      const f = formatFreq(n.freq);
-      if (f.includes(q)) return true;
-      return isNum && Math.abs(n.freq - num) <= 0.5;
-    });
-  }
-  if (networkTypeFilter.value) {
-    list = list.filter((n) => displayNetworkType(n) === networkTypeFilter.value);
-  }
-  if (commLinkFilter.value) {
-    list = list.filter(
-      (n) =>
-        (n.commLinkChannelLabel || n.commLinkChannel || "") === commLinkFilter.value
-    );
-  }
-  if (targetTypeFilter.value) {
-    list = list.filter((n) => networkHasTargetType(n, targetTypeFilter.value));
-  }
-  return list;
-});
-
-const networkTypeOptions = computed(() =>
-  uniqueValues(networks.value.map((n) => displayNetworkType(n)))
-);
-const commLinkOptions = computed(() =>
-  uniqueValues(
-    networks.value.map((n) => n.commLinkChannelLabel || n.commLinkChannel || "").filter(Boolean)
-  )
-);
-const networkTypeStats = computed(() =>
-  countBy(filteredNetworks.value, (n) => displayNetworkType(n))
-);
-const commLinkStats = computed(() =>
-  countBy(
-    filteredNetworks.value,
-    (n) => n.commLinkChannelLabel || n.commLinkChannel || "未研判"
-  )
-);
-
-watch(
-  () => props.sceneItems,
-  (items) => {
-    if (!items?.length) return;
-    const want = Number(localSceneRank.value);
-    if (localSceneRank.value == null || !items.some((x) => Number(x.rank) === want)) {
-      localSceneRank.value = Number(props.initialSceneRank ?? items[0].rank);
-    }
-    if (props.initialNetworkId != null) {
-      selectNetwork({ networkId: props.initialNetworkId });
+export default {
+  name: "SignalNetworkExplorer",
+  components: { AnalystWorkbench },
+  props: {
+    sceneItems: { type: Array, default: function () { return []; } },
+    externalTargetFixes: { type: Array, default: function () { return []; } },
+    externalFixMeta: { type: String, default: "" },
+    dfMatchResult: { type: Object, default: null },
+    initialSceneRank: { type: Number, default: null },
+    initialNetworkId: { type: Number, default: null }
+  },
+  data: function () {
+    return {
+      localSceneRank: null,
+      freqSearch: "",
+      networkTypeFilter: "",
+      commLinkFilter: "",
+      targetTypeFilter: "",
+      activeNetworkId: null,
+      activeTargetId: null,
+      selected: null,
+      detailLoading: false,
+      workbenchKey: "",
+      loadSeq: 0
+    };
+  },
+  computed: {
+    sortedSceneItems: function () {
+      return sortScenesForDisplay(this.sceneItems);
+    },
+    currentItem: function () {
+      const want = Number(this.localSceneRank);
+      const self = this;
+      return this.sortedSceneItems.find(function (x) { return Number(x.rank) === want; });
+    },
+    analysisId: function () {
+      return (this.currentItem && this.currentItem.session && this.currentItem.session.analysisId) || "";
+    },
+    networks: function () {
+      const list = (this.currentItem && this.currentItem.session && this.currentItem.session.networks) || [];
+      return list.slice().sort(function (a, b) { return (b.signalCount || 0) - (a.signalCount || 0); });
+    },
+    filteredNetworks: function () {
+      var list = this.networks;
+      const q = this.freqSearch.trim();
+      if (q) {
+        const num = Number(q);
+        const isNum = !Number.isNaN(num);
+        list = list.filter(function (n) {
+          if (String(n.networkId) === q) return true;
+          const f = formatFreq(n.freq);
+          if (f.indexOf(q) >= 0) return true;
+          return isNum && Math.abs(n.freq - num) <= 0.5;
+        });
+      }
+      if (this.networkTypeFilter) {
+        const filter = this.networkTypeFilter;
+        list = list.filter(function (n) { return displayNetworkType(n) === filter; });
+      }
+      if (this.commLinkFilter) {
+        const filter = this.commLinkFilter;
+        list = list.filter(function (n) {
+          return (n.commLinkChannelLabel || n.commLinkChannel || "") === filter;
+        });
+      }
+      if (this.targetTypeFilter) {
+        const type = this.targetTypeFilter;
+        list = list.filter(function (n) { return this.networkHasTargetType(n, type); }.bind(this));
+      }
+      return list;
+    },
+    networkTypeOptions: function () {
+      return uniqueValues(this.networks.map(function (n) { return displayNetworkType(n); }));
+    },
+    commLinkOptions: function () {
+      return uniqueValues(
+        this.networks
+          .map(function (n) { return n.commLinkChannelLabel || n.commLinkChannel || ""; })
+          .filter(Boolean)
+      );
+    },
+    networkTypeStats: function () {
+      return countBy(this.filteredNetworks, function (n) { return displayNetworkType(n); });
+    },
+    commLinkStats: function () {
+      return countBy(
+        this.filteredNetworks,
+        function (n) { return n.commLinkChannelLabel || n.commLinkChannel || "未研判"; }
+      );
     }
   },
-  { immediate: true }
-);
-
-function onSceneChange() {
-  activeNetworkId.value = null;
-  selected.value = null;
-  freqSearch.value = "";
-  networkTypeFilter.value = "";
-  commLinkFilter.value = "";
-  targetTypeFilter.value = "";
-  const first = filteredNetworks.value[0];
-  if (first) selectNetwork(first);
-}
-
-async function selectNetwork(summary) {
-  if (!analysisId.value) return;
-  const seq = ++loadSeq;
-  activeNetworkId.value = summary.networkId;
-  detailLoading.value = true;
-  const cacheKey = `${analysisId.value}-${summary.networkId}`;
-  workbenchKey.value = cacheKey;
-  if (networkCache.has(cacheKey)) {
-    selected.value = networkCache.get(cacheKey);
-    detailLoading.value = false;
-    return;
-  }
-  try {
-    const raw = await fetchNetworkDetail(analysisId.value, summary.networkId);
-    if (seq !== loadSeq) return;
-    const norm = normalizeNetwork(raw);
-    networkCache.set(cacheKey, norm);
-    selected.value = norm;
-    const card = networks.value.find((x) => x.networkId === summary.networkId);
-    if (card && norm) {
-      card.targetCount = norm.targetCount ?? (norm.targets || []).length;
-      card.networkType = norm.networkType;
-      card.commLinkChannelLabel = norm.commLinkChannelLabel;
+  watch: {
+    sceneItems: {
+      handler: function (items) {
+        if (!items || !items.length) return;
+        const want = Number(this.localSceneRank);
+        const self = this;
+        if (this.localSceneRank == null || !items.some(function (x) { return Number(x.rank) === want; })) {
+          this.localSceneRank = Number(this.initialSceneRank != null ? this.initialSceneRank : items[0].rank);
+        }
+        if (this.initialNetworkId != null) {
+          this.selectNetwork({ networkId: this.initialNetworkId });
+        }
+      },
+      immediate: true
     }
-  } finally {
-    if (seq === loadSeq) detailLoading.value = false;
+  },
+  created: function () {
+    this.networkCache = new Map();
+  },
+  methods: {
+    sceneTypeLabel: sceneTypeLabel,
+    commModeLabel: commModeLabel,
+    convergenceLabel: convergenceLabel,
+    displayNetworkType: displayNetworkType,
+    ellipseLabel: ellipseLabel,
+    formatEmissionShare: formatEmissionShare,
+    formatFreq: formatFreq,
+    formatMetric: formatMetric,
+    formatStatMap: formatStatMap,
+    targetTypeLabel: targetTypeLabel,
+    networkHasTargetType: function (n, type) {
+      if (type === "GROUND") return (n.groundTargetCount || 0) > 0;
+      if (type === "AWACS") return (n.awacsTargetCount || 0) > 0;
+      if (type === "AIR") return (n.airTargetCount || 0) > 0;
+      return true;
+    },
+    onSceneChange: function () {
+      this.activeNetworkId = null;
+      this.selected = null;
+      this.freqSearch = "";
+      this.networkTypeFilter = "";
+      this.commLinkFilter = "";
+      this.targetTypeFilter = "";
+      const first = this.filteredNetworks[0];
+      if (first) this.selectNetwork(first);
+    },
+    selectNetwork: async function (summary) {
+      if (!this.analysisId) return;
+      const seq = ++this.loadSeq;
+      this.activeNetworkId = summary.networkId;
+      this.detailLoading = true;
+      const cacheKey = this.analysisId + "-" + summary.networkId;
+      this.workbenchKey = cacheKey;
+      if (this.networkCache.has(cacheKey)) {
+        this.selected = this.networkCache.get(cacheKey);
+        this.detailLoading = false;
+        return;
+      }
+      try {
+        const raw = await fetchNetworkDetail(this.analysisId, summary.networkId);
+        if (seq !== this.loadSeq) return;
+        const norm = normalizeNetwork(raw);
+        this.networkCache.set(cacheKey, norm);
+        this.selected = norm;
+        const self = this;
+        const card = this.networks.find(function (x) { return x.networkId === summary.networkId; });
+        if (card && norm) {
+          card.targetCount = norm.targetCount != null ? norm.targetCount : (norm.targets || []).length;
+          card.networkType = norm.networkType;
+          card.commLinkChannelLabel = norm.commLinkChannelLabel;
+        }
+      } finally {
+        if (seq === this.loadSeq) this.detailLoading = false;
+      }
+    },
+    locateMethodLabel: function (m) {
+      const map = { BEARING: "方位推算", CSV: "CSV定位", MIXED: "融合定位", NONE: "无定位" };
+      return map[m] || m || "—";
+    },
+    focusTarget: function (targetId) {
+      this.activeTargetId = targetId;
+      const wb = this.$refs.workbenchRef;
+      if (wb && wb.selectTarget) wb.selectTarget(targetId, null, true);
+    },
+    focusNetwork: function (sceneRank, networkId, targetId) {
+      this.activeTargetId = targetId || null;
+      this.localSceneRank = Number(sceneRank);
+      this.selectNetwork({ networkId: networkId });
+    }
   }
-}
-
-function locateMethodLabel(m) {
-  const map = { BEARING: "方位推算", CSV: "CSV定位", MIXED: "融合定位", NONE: "无定位" };
-  return map[m] || m || "—";
-}
-
-function focusTarget(targetId) {
-  activeTargetId.value = targetId;
-  workbenchRef.value?.selectTarget?.(targetId, null, true);
-}
-
-function focusNetwork(sceneRank, networkId, targetId = null) {
-  activeTargetId.value = targetId || null;
-  localSceneRank.value = Number(sceneRank);
-  selectNetwork({ networkId });
-}
-
-defineExpose({ focusNetwork });
+};
 </script>
 
 <style scoped>
 .signal-explorer {
   margin-top: 20px;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 16px;
-  background: #fafafa;
 }
-.explorer-header h3 {
+.explorer-header h3,
+.cet36-panel__title-text {
   margin: 0 0 4px;
-  font-size: 1.05rem;
 }
 .hint {
   font-size: 12px;
-  color: #6b7280;
+  color: var(--theme-text-muted);
   margin: 0 0 12px;
+  font-weight: normal;
 }
 .explorer-body {
   display: flex;
@@ -365,7 +383,7 @@ defineExpose({ focusNetwork });
 .list {
   width: 300px;
   flex-shrink: 0;
-  border-right: 1px solid #e5e7eb;
+  border-right: 1px solid var(--theme-border);
   padding-right: 12px;
 }
 .scene-pick {
@@ -374,15 +392,19 @@ defineExpose({ focusNetwork });
   font-size: 12px;
   gap: 4px;
   margin-bottom: 10px;
+  color: var(--theme-text-label);
 }
 .scene-pick select {
   padding: 6px 8px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
+  border: 1px solid var(--theme-border-input);
+  border-radius: 2px;
+  background: var(--theme-bg-input);
+  color: var(--theme-text-primary);
 }
 .list h4 {
   margin: 0 0 8px;
   font-size: 13px;
+  color: var(--theme-text-accent);
 }
 .filters {
   display: flex;
@@ -395,13 +417,15 @@ defineExpose({ focusNetwork });
   width: 100%;
   box-sizing: border-box;
   padding: 6px 8px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
+  border: 1px solid var(--theme-border-input);
+  border-radius: 2px;
   font-size: 12px;
+  background: var(--theme-bg-input);
+  color: var(--theme-text-primary);
 }
 .stats-bar {
   font-size: 11px;
-  color: #4b5563;
+  color: var(--theme-text-secondary);
   margin-bottom: 8px;
   line-height: 1.4;
 }
@@ -410,24 +434,25 @@ defineExpose({ focusNetwork });
   max-height: 420px;
 }
 .card {
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
+  border: 1px solid var(--theme-border);
+  border-radius: 2px;
   padding: 8px;
   margin-bottom: 8px;
   cursor: pointer;
   font-size: 12px;
-  background: #fff;
+  background: var(--theme-bg-panel-alt);
+  color: var(--theme-text-secondary);
 }
 .card.active {
-  border-color: #2563eb;
-  background: #eff6ff;
+  border-color: var(--theme-border-focus);
+  background: var(--theme-bg-table-current);
 }
 .type-line {
   font-weight: 600;
-  color: #1d4ed8;
+  color: var(--theme-text-accent);
 }
 .empty {
-  color: #9ca3af;
+  color: var(--theme-text-muted);
   font-size: 12px;
 }
 .detail {
@@ -436,44 +461,40 @@ defineExpose({ focusNetwork });
   overflow: auto;
 }
 .detail-empty {
-  color: #9ca3af;
+  color: var(--theme-text-muted);
   padding: 24px;
 }
 .detail h4 {
   margin: 0 0 10px;
+  color: var(--theme-text-accent);
+  font-size: 14px;
 }
 .loading {
-  color: #2563eb;
+  color: var(--theme-text-accent);
 }
 .summary {
   margin: 10px 0;
   padding: 8px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  background: #fff;
+  border: 1px solid var(--theme-border);
+  border-radius: 2px;
+  background: var(--theme-bg-panel-alt);
+}
+.summary h5 {
+  margin: 0 0 6px;
+  color: var(--theme-text-accent);
+  font-size: 13px;
 }
 .conclusion-list {
   margin: 0;
   padding-left: 18px;
   font-size: 13px;
+  color: var(--theme-text-secondary);
 }
 .detail tbody tr {
   cursor: pointer;
 }
-.detail tbody tr.row-active {
-  background: #eff6ff;
-  outline: 2px solid #2563eb;
-}
-table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-bottom: 12px;
-  font-size: 12px;
-}
-th,
-td {
-  border: 1px solid #e5e7eb;
-  padding: 6px;
-  text-align: left;
+.detail tbody tr.row-active td {
+  background: var(--theme-bg-table-current);
+  outline: 2px solid var(--theme-border-focus);
 }
 </style>

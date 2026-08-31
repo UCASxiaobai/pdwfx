@@ -1,3 +1,4 @@
+<!-- vue2-done -->
 <template>
   <div class="cross-freq-viz">
     <div class="viz-head">
@@ -7,22 +8,12 @@
 
     <div class="view-mode">
       <span class="mode-label">显示模式</span>
-      <button
-        type="button"
-        class="mode-btn"
-        :class="{ active: viewMode === 'fused' }"
-        @click="viewMode = 'fused'"
-      >
+      <el-button size="mini" :type="viewMode === 'fused' ? 'primary' : 'default'" @click="viewMode = 'fused'">
         合成轨迹
-      </button>
-      <button
-        type="button"
-        class="mode-btn"
-        :class="{ active: viewMode === 'tracks' }"
-        @click="viewMode = 'tracks'"
-      >
+      </el-button>
+      <el-button size="mini" :type="viewMode === 'tracks' ? 'primary' : 'default'" @click="viewMode = 'tracks'">
         分轨视图
-      </button>
+      </el-button>
     </div>
 
     <details class="match-params" open>
@@ -131,7 +122,7 @@
 
         <div
           v-if="chartHasData(view)"
-          :ref="(el) => setChartEl(idx, el)"
+          ref="chartBox"
           class="chart-box"
           :style="{ height: chartHeightFor(view) + 'px' }"
         />
@@ -148,36 +139,25 @@
             统计本图全部分轨（含灰色非高亮），横行为跨频关联后的物理目标。
           </p>
           <div class="matrix-scroll">
-            <table class="channel-matrix">
-              <thead>
-                <tr>
-                  <th class="matrix-corner">目标 \\ 频率</th>
-                  <th
-                    v-for="col in panelTargetChannelMatrix(view).columns"
-                    :key="col.id"
-                    class="matrix-col-head"
-                  >
-                    {{ col.label }}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  v-for="row in panelTargetChannelMatrix(view).rows"
-                  :key="row.key"
-                >
-                  <th class="matrix-row-head">{{ row.label }}</th>
-                  <td
-                    v-for="(checked, ci) in row.cells"
-                    :key="ci"
-                    class="matrix-cell"
-                    :class="{ occupied: checked }"
-                  >
-                    {{ checked ? "✓" : "" }}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+            <el-table
+              :data="panelTargetChannelMatrix(view).rows"
+              size="mini"
+              border
+              class="channel-matrix"
+            >
+              <el-table-column prop="label" label="目标 \ 频率" min-width="120" fixed />
+              <el-table-column
+                v-for="(col, ci) in panelTargetChannelMatrix(view).columns"
+                :key="col.id"
+                :label="col.label"
+                min-width="72"
+                align="center"
+              >
+                <template slot-scope="scope">
+                  <span :class="{ occupied: scope.row.cells[ci] }">{{ scope.row.cells[ci] ? "✓" : "" }}</span>
+                </template>
+              </el-table-column>
+            </el-table>
           </div>
         </div>
       </section>
@@ -192,15 +172,14 @@
   </div>
 </template>
 
-<script setup>
-import { nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+<script>
 import * as echarts from "echarts";
 import {
   allowedRanksSignature,
   forwardItemsSignature
-} from "../scene/analysisViewCache.js";
-import { loadAllSceneAnalysisViews } from "../scene/analysisBearing.js";
-import { DEFAULT_MATCH_OPTIONS } from "../scene/bearingMatch.js";
+} from "@/scene/analysisViewCache.js";
+import { loadAllSceneAnalysisViews } from "@/scene/analysisBearing.js";
+import { DEFAULT_MATCH_OPTIONS } from "@/scene/bearingMatch.js";
 import {
   buildCrossFreqPanelsFromViews,
   buildFusedChartOption,
@@ -211,195 +190,193 @@ import {
   panelFusedTargets,
   panelHighlightedFreqLegend,
   panelMatchClusters
-} from "../scene/crossFreqMatchView.js";
+} from "@/scene/crossFreqMatchView.js";
 
-function panelTargetChannelMatrix(view) {
-  return view?.targetChannelMatrix || { columns: [], rows: [] };
-}
-
-const viewMode = ref("fused");
-
-const props = defineProps({
-  forwardItems: { type: Array, default: () => [] },
-  sceneResult: { type: Object, default: null },
-  allowedRanks: { type: Object, default: null },
-  freqTolerance: { type: Number, default: 0.01 }
-});
-
-const loading = ref(false);
-const loadProgress = ref("");
-const loadError = ref("");
-const panelItems = ref([]);
-const chartEls = ref([]);
-const chartInsts = [];
-const sceneViewsCache = ref([]);
-const matchOpts = reactive({ ...DEFAULT_MATCH_OPTIONS });
-let loadSeq = 0;
-let abortCtrl = null;
-let paramTimer = null;
-
-function sceneByRankMap() {
-  const m = new Map();
-  for (const s of props.sceneResult?.scenes || []) {
-    m.set(s.rank, s);
-  }
-  return m;
-}
-
-function matchOptsKey() {
-  return JSON.stringify({
-    gateDeg: matchOpts.gateDeg,
-    timeToleranceMs: matchOpts.timeToleranceMs,
-    minMatchPoints: matchOpts.minMatchPoints,
-    minOverlapMs: matchOpts.minOverlapMs,
-    showOthers: matchOpts.showOthers,
-    topColoredTracks: matchOpts.topColoredTracks,
-    matrixTopFreqs: matchOpts.matrixTopFreqs,
-    requireMotionConsistent: matchOpts.requireMotionConsistent,
-    requireSameTargetType: matchOpts.requireSameTargetType
-  });
-}
-
-function panelKey(view, idx) {
-  return `${(view.memberRanks || []).join("-")}-${idx}-${viewMode.value}-${matchOptsKey()}`;
-}
-
-function chartHasData(view) {
-  if (view.empty) return false;
-  if (viewMode.value === "fused") return (view.fusedTargets || []).length > 0;
-  return (view.targets || []).length > 0;
-}
-
-function chartHeightFor(view) {
-  return crossFreqChartHeight(view);
-}
-
-watch(viewMode, () => renderCharts());
-
-function setChartEl(idx, el) {
-  chartEls.value[idx] = el;
-}
-
-function lineSampleClass(lineType) {
-  if (lineType === "dashed") return "dashed";
-  if (lineType === "dotted") return "dotted";
-  return "solid";
-}
-
-watch(
-  () => [
-    forwardItemsSignature(props.forwardItems),
-    allowedRanksSignature(props.allowedRanks)
-  ],
-  () => loadSceneData()
-);
-
-watch(
-  matchOpts,
-  () => {
-    clearTimeout(paramTimer);
-    paramTimer = setTimeout(() => applyMatchOnly(), 200);
+export default {
+  name: "SceneCrossFreqMatchViz",
+  props: {
+    forwardItems: { type: Array, default: function () { return []; } },
+    sceneResult: { type: Object, default: null },
+    allowedRanks: { type: Object, default: null },
+    freqTolerance: { type: Number, default: 0.01 }
   },
-  { deep: true }
-);
-
-function applyMatchOnly() {
-  if (!sceneViewsCache.value.length) return;
-  panelItems.value = buildCrossFreqPanelsFromViews(sceneViewsCache.value, { ...matchOpts });
-  renderCharts();
-}
-
-async function loadSceneData() {
-  abortCtrl?.abort();
-  const items = props.forwardItems || [];
-  if (!items.length) {
-    sceneViewsCache.value = [];
-    panelItems.value = [];
-    disposeCharts();
-    loading.value = false;
-    return;
-  }
-
-  const seq = ++loadSeq;
-  loading.value = true;
-  loadProgress.value = "";
-  loadError.value = "";
-  abortCtrl = new AbortController();
-  try {
-    const views = await loadAllSceneAnalysisViews(
-      items,
-      sceneByRankMap(),
-      abortCtrl.signal,
-      props.freqTolerance,
-      props.allowedRanks,
-      (cur, total, rank) => {
-        loadProgress.value = `（场景 #${rank}，${cur}/${total}）`;
-      }
-    );
-    if (seq !== loadSeq) return;
-    sceneViewsCache.value = views;
-    panelItems.value = buildCrossFreqPanelsFromViews(views, { ...matchOpts });
-    loading.value = false;
-    loadProgress.value = "";
-    await renderCharts();
-  } catch (e) {
-    if (e?.name === "AbortError") {
-      if (seq === loadSeq) loading.value = false;
-      return;
+  data: function () {
+    return {
+      viewMode: "fused",
+      loading: false,
+      loadProgress: "",
+      loadError: "",
+      panelItems: [],
+      sceneViewsCache: [],
+      matchOpts: Object.assign({}, DEFAULT_MATCH_OPTIONS),
+      loadSeq: 0
+    };
+  },
+  computed: {
+    watchSignature: function () {
+      return forwardItemsSignature(this.forwardItems) + "|" + allowedRanksSignature(this.allowedRanks);
     }
-    if (seq !== loadSeq) return;
-    loadError.value = `加载失败：${e?.message || e}`;
-    loading.value = false;
+  },
+  watch: {
+    watchSignature: "loadSceneData",
+    viewMode: "renderCharts",
+    matchOpts: {
+      deep: true,
+      handler: function () {
+        var self = this;
+        clearTimeout(this.paramTimer);
+        this.paramTimer = setTimeout(function () {
+          self.applyMatchOnly();
+        }, 200);
+      }
+    }
+  },
+  mounted: function () {
+    this.loadSceneData();
+    window.addEventListener("resize", this.onResize);
+  },
+  beforeDestroy: function () {
+    clearTimeout(this.paramTimer);
+    if (this.abortCtrl) this.abortCtrl.abort();
+    window.removeEventListener("resize", this.onResize);
+    this.disposeCharts();
+  },
+  methods: {
+    panelFreqColorLegend: panelFreqColorLegend,
+    panelFreqLineLegend: panelFreqLineLegend,
+    panelFusedTargets: panelFusedTargets,
+    panelHighlightedFreqLegend: panelHighlightedFreqLegend,
+    panelMatchClusters: panelMatchClusters,
+    panelTargetChannelMatrix: function (view) {
+      return (view && view.targetChannelMatrix) || { columns: [], rows: [] };
+    },
+    sceneByRankMap: function () {
+      var m = new Map();
+      var scenes = (this.sceneResult && this.sceneResult.scenes) || [];
+      scenes.forEach(function (s) { m.set(s.rank, s); });
+      return m;
+    },
+    matchOptsKey: function () {
+      var o = this.matchOpts;
+      return JSON.stringify({
+        gateDeg: o.gateDeg,
+        timeToleranceMs: o.timeToleranceMs,
+        minMatchPoints: o.minMatchPoints,
+        minOverlapMs: o.minOverlapMs,
+        showOthers: o.showOthers,
+        topColoredTracks: o.topColoredTracks,
+        matrixTopFreqs: o.matrixTopFreqs,
+        requireMotionConsistent: o.requireMotionConsistent,
+        requireSameTargetType: o.requireSameTargetType
+      });
+    },
+    panelKey: function (view, idx) {
+      return (view.memberRanks || []).join("-") + "-" + idx + "-" + this.viewMode + "-" + this.matchOptsKey();
+    },
+    chartHasData: function (view) {
+      if (view.empty) return false;
+      if (this.viewMode === "fused") return (view.fusedTargets || []).length > 0;
+      return (view.targets || []).length > 0;
+    },
+    chartHeightFor: function (view) {
+      return crossFreqChartHeight(view);
+    },
+    lineSampleClass: function (lineType) {
+      if (lineType === "dashed") return "dashed";
+      if (lineType === "dotted") return "dotted";
+      return "solid";
+    },
+    applyMatchOnly: function () {
+      if (!this.sceneViewsCache.length) return;
+      this.panelItems = buildCrossFreqPanelsFromViews(this.sceneViewsCache, Object.assign({}, this.matchOpts));
+      this.renderCharts();
+    },
+    loadSceneData: function () {
+      var self = this;
+      if (this.abortCtrl) this.abortCtrl.abort();
+      var items = this.forwardItems || [];
+      if (!items.length) {
+        this.sceneViewsCache = [];
+        this.panelItems = [];
+        this.disposeCharts();
+        this.loading = false;
+        return;
+      }
+      var seq = ++this.loadSeq;
+      this.loading = true;
+      this.loadProgress = "";
+      this.loadError = "";
+      this.abortCtrl = new AbortController();
+      loadAllSceneAnalysisViews(
+        items,
+        this.sceneByRankMap(),
+        this.abortCtrl.signal,
+        this.freqTolerance,
+        this.allowedRanks,
+        function (cur, total, rank) {
+          self.loadProgress = "（场景 #" + rank + "，" + cur + "/" + total + "）";
+        }
+      ).then(function (views) {
+        if (seq !== self.loadSeq) return;
+        self.sceneViewsCache = views;
+        self.panelItems = buildCrossFreqPanelsFromViews(views, Object.assign({}, self.matchOpts));
+        self.loading = false;
+        self.loadProgress = "";
+        return self.renderCharts();
+      }).catch(function (e) {
+        if (e && e.name === "AbortError") {
+          if (seq === self.loadSeq) self.loading = false;
+          return;
+        }
+        if (seq !== self.loadSeq) return;
+        self.loadError = "加载失败：" + ((e && e.message) || e);
+        self.loading = false;
+      });
+    },
+    renderCharts: function () {
+      var self = this;
+      return this.$nextTick().then(function () {
+        self.disposeCharts();
+        var refs = self.$refs.chartBox;
+        if (!refs) return;
+        var els = Array.isArray(refs) ? refs : [refs];
+        self.panelItems.forEach(function (view, idx) {
+          var el = els[idx];
+          if (!el || !self.chartHasData(view)) return;
+          var inst = echarts.init(el);
+          if (!self.chartInsts) self.chartInsts = [];
+          self.chartInsts[idx] = inst;
+          var option = self.viewMode === "fused"
+            ? buildFusedChartOption(view)
+            : buildMatchChartOption(view);
+          inst.setOption(option, true);
+        });
+      });
+    },
+    disposeCharts: function () {
+      if (this.chartInsts) {
+        this.chartInsts.forEach(function (inst) {
+          if (inst) inst.dispose();
+        });
+      }
+      this.chartInsts = [];
+    },
+    onResize: function () {
+      if (this.chartInsts) {
+        this.chartInsts.forEach(function (inst) {
+          if (inst) inst.resize();
+        });
+      }
+    }
   }
-}
-
-async function renderCharts() {
-  await nextTick();
-  disposeCharts();
-  panelItems.value.forEach((view, idx) => {
-    const el = chartEls.value[idx];
-    if (!el || !chartHasData(view)) return;
-    const inst = echarts.init(el);
-    chartInsts[idx] = inst;
-    const option =
-      viewMode.value === "fused"
-        ? buildFusedChartOption(view)
-        : buildMatchChartOption(view);
-    inst.setOption(option, true);
-  });
-}
-
-function disposeCharts() {
-  for (const inst of chartInsts) {
-    inst?.dispose();
-  }
-  chartInsts.length = 0;
-}
-
-function onResize() {
-  for (const inst of chartInsts) {
-    inst?.resize();
-  }
-}
-
-onMounted(() => {
-  loadSceneData();
-  window.addEventListener("resize", onResize);
-});
-
-onBeforeUnmount(() => {
-  clearTimeout(paramTimer);
-  abortCtrl?.abort();
-  window.removeEventListener("resize", onResize);
-  disposeCharts();
-});
+};
 </script>
 
 <style scoped>
 .cross-freq-viz {
   margin-top: 14px;
   padding-top: 14px;
-  border-top: 1px solid #e5e7eb;
+  border-top: 1px solid var(--theme-border);
 }
 .viz-head {
   display: flex;
@@ -408,8 +385,8 @@ onBeforeUnmount(() => {
   gap: 8px;
   margin-bottom: 8px;
 }
-.viz-head h4 { margin: 0; font-size: 14px; }
-.viz-meta { font-size: 11px; color: #6b7280; }
+.viz-head h4 { margin: 0; font-size: 14px; color: var(--theme-text-primary); }
+.viz-meta { font-size: 11px; color: var(--theme-text-muted); }
 .view-mode {
   display: flex;
   align-items: center;
@@ -417,27 +394,12 @@ onBeforeUnmount(() => {
   margin-bottom: 8px;
   font-size: 12px;
 }
-.mode-label { color: #6b7280; font-weight: 600; }
-.mode-btn {
-  border: 1px solid #d1d5db;
-  background: #fff;
-  padding: 4px 10px;
-  border-radius: 6px;
-  font-size: 12px;
-  cursor: pointer;
-  font-family: inherit;
-}
-.mode-btn.active {
-  border-color: #7c3aed;
-  color: #6d28d9;
-  font-weight: 600;
-  background: #f5f3ff;
-}
-.summary-line { font-size: 12px; color: #4b5563; margin: 0 0 10px; }
+.mode-label { color: var(--theme-text-muted); font-weight: 600; }
+.summary-line { font-size: 12px; color: var(--theme-text-secondary); margin: 0 0 10px; }
 .match-params {
   margin-bottom: 10px;
   font-size: 12px;
-  color: #374151;
+  color: var(--theme-text-secondary);
 }
 .match-params summary { cursor: pointer; font-weight: 600; margin-bottom: 6px; }
 .param-grid {
@@ -449,27 +411,29 @@ onBeforeUnmount(() => {
 .param-grid label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; }
 .param-grid input[type="number"] {
   padding: 4px 6px;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--theme-border-input);
   border-radius: 4px;
+  background: var(--theme-bg-input);
+  color: var(--theme-text-primary);
 }
 .check { flex-direction: row !important; align-items: center; gap: 6px !important; }
 .chart-panel {
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--theme-border);
   border-radius: 8px;
   padding: 10px 12px 12px;
   margin-bottom: 14px;
-  background: #fff;
+  background: var(--theme-bg-panel);
 }
-.panel-title { margin: 0 0 4px; font-size: 14px; font-weight: 600; color: #111827; }
-.panel-sub { margin: 0 0 4px; font-size: 12px; color: #4b5563; }
+.panel-title { margin: 0 0 4px; font-size: 14px; font-weight: 600; color: var(--theme-text-primary); }
+.panel-sub { margin: 0 0 4px; font-size: 12px; color: var(--theme-text-secondary); }
 .time-badge {
   display: inline-block;
   margin: 0 0 8px;
   padding: 2px 8px;
   font-size: 12px;
   font-weight: 600;
-  color: #1d4ed8;
-  background: #eff6ff;
+  color: var(--theme-text-accent);
+  background: var(--theme-bg-panel-alt);
   border-radius: 4px;
 }
 .encoding-row {
@@ -480,89 +444,55 @@ onBeforeUnmount(() => {
   margin-bottom: 6px;
   font-size: 11px;
 }
-.encoding-label { color: #6b7280; font-weight: 600; }
+.encoding-label { color: var(--theme-text-muted); font-weight: 600; }
 .match-chip, .freq-chip {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   padding: 2px 8px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--theme-border);
   border-radius: 12px;
-  background: #f9fafb;
+  background: var(--theme-bg-deep);
+  color: var(--theme-text-secondary);
 }
 .swatch { width: 10px; height: 10px; border-radius: 2px; }
-.line-sample { width: 22px; border-top: 2px solid #374151; }
+.line-sample { width: 22px; border-top: 2px solid var(--theme-text-secondary); }
 .line-sample.dashed { border-top-style: dashed; }
 .line-sample.dotted { border-top-style: dotted; }
 .chart-box { min-height: 480px; width: 100%; }
 .channel-matrix-block {
   margin: 12px 0 0;
   padding: 10px 12px;
-  background: #f9fafb;
-  border: 1px solid #e5e7eb;
+  background: var(--theme-bg-deep);
+  border: 1px solid var(--theme-border);
   border-radius: 8px;
 }
 .matrix-title {
   margin: 0 0 4px;
   font-size: 13px;
   font-weight: 600;
-  color: #111827;
+  color: var(--theme-text-primary);
 }
 .matrix-desc {
   margin: 0 0 8px;
   font-size: 11px;
-  color: #6b7280;
+  color: var(--theme-text-muted);
   line-height: 1.45;
 }
-.matrix-scroll {
-  overflow-x: auto;
-}
-.channel-matrix {
-  border-collapse: collapse;
-  font-size: 12px;
-  min-width: 100%;
-}
-.channel-matrix th,
-.channel-matrix td {
-  border: 1px solid #e5e7eb;
-  padding: 6px 10px;
-  text-align: center;
-  white-space: nowrap;
-}
-.matrix-corner,
-.matrix-row-head {
-  text-align: left;
-  background: #f3f4f6;
-  font-weight: 600;
-  color: #374151;
-  position: sticky;
-  left: 0;
-  z-index: 1;
-}
-.matrix-col-head {
-  background: #eff6ff;
-  color: #1e40af;
-  font-weight: 600;
-  max-width: 140px;
-  white-space: normal;
-}
-.matrix-cell {
-  color: #9ca3af;
-  min-width: 48px;
-}
-.matrix-cell.occupied {
-  color: #059669;
+.matrix-scroll { overflow-x: auto; }
+.occupied {
+  color: #91cc75;
   font-weight: 700;
   font-size: 14px;
 }
-.hint { font-size: 11px; color: #6b7280; margin: 4px 0 0; line-height: 1.45; }
+.hint { font-size: 11px; color: var(--theme-text-muted); margin: 4px 0 0; line-height: 1.45; }
 .load-hint, .load-error { font-size: 12px; }
-.load-error { color: #b91c1c; }
+.load-error { color: #ee6666; }
 .viz-empty {
   padding: 20px;
   text-align: center;
-  color: #9ca3af;
-  background: #f9fafb;
+  color: var(--theme-text-muted);
+  background: var(--theme-bg-deep);
   border-radius: 8px;
 }
 .viz-empty.inline { padding: 12px; margin: 0; }

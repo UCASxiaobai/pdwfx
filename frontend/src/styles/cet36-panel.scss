@@ -1,0 +1,154 @@
+// cet36 面板 — 对齐 common.scss .sn-container + txSource head-group-img
+
+%cet36-corner-mark {
+  content: "";
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  border-color: #0a6aff;
+  border-style: solid;
+}
+
+.cet36-panel {
+  position: relative;
+  margin-bottom: 16px;
+  padding: 0;
+  border: 2px solid rgba(92, 255, 255, 0.1);
+  border-radius: 0;
+  overflow: visible;
+  background: rgba(10, 106, 255, 0.1) url('../assets/cet36/img2/wg.png') repeat 50% 50%;
+  background-blend-mode: screen;
+
+  &::before {
+    @extend %cet36-corner-mark;
+    top: -2px;
+    left: -2px;
+    border-top-width: 2px;
+    border-left-width: 2px;
+    border-bottom-width: 0;
+    border-right-width: 0;
+  }
+
+  &::after {
+    @extend %cet36-corner-mark;
+    top: -2px;
+    right: -2px;
+    border-top-width: 2px;
+    border-right-width: 2px;
+    border-bottom-width: 0;
+    border-left-width: 0;
+  }
+}
+
+.cet36-panel__title {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  padding: 10px 14px 10px 34px;
+  min-height: 52px;
+  border-bottom: 1px solid rgba(0, 105, 139, 0.45);
+  background-color: rgba(14, 54, 81, 0.35);
+}
+
+.cet36-panel__title--labeled {
+  padding-left: 14px;
+
+  &::before {
+    display: none;
+  }
+}
+
+.cet36-panel__title:not(.cet36-panel__title--labeled)::before {
+  content: "";
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  margin-top: -7px;
+  width: 14px;
+  height: 14px;
+  background: url('../assets/cet36/img2/sn-title.png') no-repeat 0 0;
+  background-size: contain;
+}
+
+.cet36-panel__title-img {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.cet36-panel__title-text {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  font-family: "Microsoft YaHei", sans-serif;
+  color: #00d5e8;
+  letter-spacing: 1px;
+}
+
+.cet36-panel__body {
+  position: relative;
+  padding: 12px 16px 16px;
+
+  &::before {
+    @extend %cet36-corner-mark;
+    bottom: -2px;
+    left: -2px;
+    border-bottom-width: 2px;
+    border-left-width: 2px;
+    border-top-width: 0;
+    border-right-width: 0;
+  }
+
+  &::after {
+    @extend %cet36-corner-mark;
+    bottom: -2px;
+    right: -2px;
+    border-bottom-width: 2px;
+    border-right-width: 2px;
+    border-top-width: 0;
+    border-left-width: 0;
+  }
+}
+
+// 可点击的功能块（对齐 txSource .head-group-img）
+.cet36-tab-card {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 65px;
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+  border: 1px solid #00698b;
+  background-color: rgba(48, 210, 242, 0.2);
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+  transition: color 0.2s ease, background-image 0.2s ease;
+
+  &:hover,
+  &.active {
+    color: #fff;
+    background-image: url('../assets/cet36/img/home/home-item-bg1.png');
+  }
+}
+
+.cet36-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  list-style: none;
+  padding: 0;
+  margin: 0 0 16px;
+  font-size: 13px;
+}
+.cet36-steps li {
+  color: var(--theme-text-muted);
+}
+.cet36-steps li.done {
+  color: var(--theme-accent-bright);
+  font-weight: 600;
+}

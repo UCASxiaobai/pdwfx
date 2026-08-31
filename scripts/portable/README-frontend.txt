@@ -13,13 +13,20 @@
 4. 浏览器自动打开 http://localhost:5173
 
 【目录说明】
-- dist/                 预编译前端资源（Vue + ECharts + OpenLayers）
+- dist/                 预编译前端资源（Vue 2 + Element UI + ECharts + OpenLayers）
 - runtime-config.js     API 地址配置（默认连 http://localhost:18080）
 - serve-frontend.ps1    内置静态文件服务（PowerShell，无需额外安装）
 
 【修改后端地址】
 若后端不在本机 18080 端口，编辑 dist/runtime-config.js：
   window.__API_BASE__ = "http://你的地址:端口";
+流式态势模块（#/stream）另需配置：
+  window.__STREAM_API_BASE__ = "http://你的地址:19080";
+  （留空时开发环境走 /stream-api 代理；便携包请填完整 URL）
+
+【开发构建】
+  cd frontend && npm install && npm run dev    # 开发（端口 5173）
+  cd frontend && npm run build                 # 产出 dist/
 
 【常见问题】
 - 页面能开但接口失败：先确认后端已启动，再检查 runtime-config.js

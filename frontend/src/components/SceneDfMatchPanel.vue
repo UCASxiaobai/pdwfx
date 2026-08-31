@@ -1,3 +1,4 @@
+<!-- vue2-done -->
 <template>
   <div class="df-match-panel">
     <p class="panel-desc">
@@ -11,12 +12,12 @@
       <label class="file-pick">
         测向文件
         <input type="file" accept=".csv" @change="onBearingPick" />
-        <span class="file-name">{{ bearingFile?.name || "未选择" }}</span>
+        <span class="file-name">{{ bearingFile ? bearingFile.name : "未选择" }}</span>
       </label>
       <label class="file-pick">
         定位文件
         <input type="file" accept=".csv" @change="onLocatePick" />
-        <span class="file-name">{{ locateFile?.name || "未选择" }}</span>
+        <span class="file-name">{{ locateFile ? locateFile.name : "未选择" }}</span>
       </label>
     </div>
 
@@ -96,18 +97,13 @@
           />
         </label>
       </div>
-      <button type="button" class="text-btn" @click="resetParams">恢复默认</button>
+      <el-button type="text" size="mini" @click="resetParams">恢复默认</el-button>
     </details>
 
     <div class="actions">
-      <button
-        type="button"
-        class="primary"
-        :disabled="!canRun || loading"
-        @click="runMatch"
-      >
+      <el-button type="primary" size="small" :disabled="!canRun || loading" @click="runMatch">
         {{ loading ? "匹配中…" : "执行测向–定位匹配" }}
-      </button>
+      </el-button>
       <span v-if="error" class="error">{{ error }}</span>
     </div>
 
@@ -117,156 +113,149 @@
         已匹配测向点 {{ result.matchedPointCount }} 条 ·
         锁定批号 {{ batchRows.length }} 个
       </p>
-      <table v-if="batchRows.length" class="batch-table">
-        <thead>
-          <tr>
-            <th>测向批号</th>
-            <th>锁定目标 (mbmc)</th>
-            <th>目标内码 (mbnm)</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="row in batchRows" :key="row.batchId">
-            <td>{{ row.displayId }}</td>
-            <td>{{ row.deviceId }}</td>
-            <td>{{ row.targetId || "—" }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <el-table v-if="batchRows.length" :data="batchRows" size="mini" border stripe class="batch-table">
+        <el-table-column prop="displayId" label="测向批号" min-width="120" />
+        <el-table-column prop="deviceId" label="锁定目标 (mbmc)" min-width="120" />
+        <el-table-column label="目标内码 (mbnm)" min-width="100">
+          <template slot-scope="scope">{{ scope.row.targetId || "—" }}</template>
+        </el-table-column>
+      </el-table>
       <p v-else class="empty">无批号通过匹配门限</p>
     </section>
   </div>
 </template>
 
-<script setup>
-import { computed, reactive, ref, watch } from "vue";
-import { DEFAULT_DF_MATCH_PARAMS, paramsForDfMatchMode } from "../scene/dfMatchConfig.js";
-import { fetchDirectionFindingMatch } from "../scene/sceneApi.js";
+<script>
+import { DEFAULT_DF_MATCH_PARAMS, paramsForDfMatchMode } from "@/scene/dfMatchConfig.js";
+import { fetchDirectionFindingMatch } from "@/api/pdwfx";
 
-const emit = defineEmits(["match-result"]);
-
-const props = defineProps({
-  /** 从工作流上传区传入的 CSV，用于一键填充测向/定位文件 */
-  uploadFiles: { type: Array, default: () => [] },
-  /** 场景筛选输出目录；有 hop_batches.csv 时按换频编批 */
-  outputDir: { type: String, default: "" }
-});
-
-const matchParams = reactive({ ...DEFAULT_DF_MATCH_PARAMS });
-const bearingFile = ref(null);
-const locateFile = ref(null);
-const loading = ref(false);
-const error = ref("");
-const result = ref(null);
-
-let abortCtrl = null;
-
-const canRun = computed(() => Boolean(bearingFile.value && locateFile.value));
-
-const isCoarse = computed(() => matchParams.mode === "coarse");
-
-const timeWindowHint = computed(() => {
-  if (matchParams.ignoreTimeDimension) {
-    return "已忽略时差，本项不生效";
-  }
-  if (isCoarse.value) {
-    return "单帧关联：定位须在测向时刻 ± 该值内；可设至 600 秒（10 分钟）";
-  }
-  return "单帧关联：定位须在测向时刻 ± 该值内";
-});
-
-const batchRows = computed(() => {
-  const r = result.value;
-  if (!r?.batchToDevice) return [];
-  const targetMap = r.batchToTargetId || {};
-  return Object.entries(r.batchToDevice).map(([batchId, deviceId]) => {
-    const label = (r.batchLabels || {})[batchId];
+export default {
+  name: "SceneDfMatchPanel",
+  props: {
+    uploadFiles: { type: Array, default: function () { return []; } },
+    outputDir: { type: String, default: "" }
+  },
+  data: function () {
     return {
-      batchId,
-      displayId: label ? `${label} / ${batchId}` : batchId,
-      deviceId,
-      targetId: targetMap[batchId] || ""
+      matchParams: Object.assign({}, DEFAULT_DF_MATCH_PARAMS),
+      bearingFile: null,
+      locateFile: null,
+      loading: false,
+      error: "",
+      result: null
     };
-  });
-});
-
-function resetParams() {
-  Object.assign(matchParams, paramsForDfMatchMode(matchParams.mode || "fine"));
-}
-
-function onModeChange() {
-  Object.assign(matchParams, paramsForDfMatchMode(matchParams.mode));
-}
-
-function onBearingPick(ev) {
-  bearingFile.value = ev.target.files?.[0] || null;
-  result.value = null;
-  error.value = "";
-}
-
-function onLocatePick(ev) {
-  locateFile.value = ev.target.files?.[0] || null;
-  result.value = null;
-  error.value = "";
-}
-
-function guessFiles(files) {
-  if (!files?.length) return;
-  let bearing = null;
-  let locate = null;
-  for (const f of files) {
-    const n = (f.name || "").toLowerCase();
-    if (/lq|雷情|locate|df_match|1139/.test(n) && !/prc|ff|pdw/.test(n)) {
-      locate = locate || f;
-    } else if (/prc|ff|pdw|测向|bearing/.test(n)) {
-      bearing = bearing || f;
+  },
+  computed: {
+    canRun: function () {
+      return Boolean(this.bearingFile && this.locateFile);
+    },
+    isCoarse: function () {
+      return this.matchParams.mode === "coarse";
+    },
+    timeWindowHint: function () {
+      if (this.matchParams.ignoreTimeDimension) {
+        return "已忽略时差，本项不生效";
+      }
+      if (this.isCoarse) {
+        return "单帧关联：定位须在测向时刻 ± 该值内；可设至 600 秒（10 分钟）";
+      }
+      return "单帧关联：定位须在测向时刻 ± 该值内";
+    },
+    batchRows: function () {
+      var r = this.result;
+      if (!r || !r.batchToDevice) return [];
+      var targetMap = r.batchToTargetId || {};
+      var self = this;
+      return Object.entries(r.batchToDevice).map(function (entry) {
+        var batchId = entry[0];
+        var deviceId = entry[1];
+        var label = (r.batchLabels || {})[batchId];
+        return {
+          batchId: batchId,
+          displayId: label ? label + " / " + batchId : batchId,
+          deviceId: deviceId,
+          targetId: targetMap[batchId] || ""
+        };
+      });
+    }
+  },
+  watch: {
+    uploadFiles: {
+      immediate: true,
+      deep: true,
+      handler: function (files) {
+        this.guessFiles(files);
+      }
+    }
+  },
+  methods: {
+    resetParams: function () {
+      Object.assign(this.matchParams, paramsForDfMatchMode(this.matchParams.mode || "fine"));
+    },
+    onModeChange: function () {
+      Object.assign(this.matchParams, paramsForDfMatchMode(this.matchParams.mode));
+    },
+    onBearingPick: function (ev) {
+      this.bearingFile = (ev.target.files && ev.target.files[0]) || null;
+      this.result = null;
+      this.error = "";
+    },
+    onLocatePick: function (ev) {
+      this.locateFile = (ev.target.files && ev.target.files[0]) || null;
+      this.result = null;
+      this.error = "";
+    },
+    guessFiles: function (files) {
+      if (!files || !files.length) return;
+      var bearing = null;
+      var locate = null;
+      for (var i = 0; i < files.length; i++) {
+        var f = files[i];
+        var n = (f.name || "").toLowerCase();
+        if (/lq|雷情|locate|df_match|1139/.test(n) && !/prc|ff|pdw/.test(n)) {
+          locate = locate || f;
+        } else if (/prc|ff|pdw|测向|bearing/.test(n)) {
+          bearing = bearing || f;
+        }
+      }
+      if (!bearing && files.length === 1 && !locate) bearing = files[0];
+      if (!locate && files.length >= 2) {
+        locate = files.find(function (x) { return x !== bearing; }) || null;
+      }
+      if (bearing) this.bearingFile = bearing;
+      if (locate) this.locateFile = locate;
+    },
+    runMatch: function () {
+      var self = this;
+      if (!this.canRun) return Promise.resolve();
+      if (this.abortCtrl) this.abortCtrl.abort();
+      this.abortCtrl = new AbortController();
+      this.loading = true;
+      this.error = "";
+      this.result = null;
+      return fetchDirectionFindingMatch(
+        this.bearingFile,
+        this.locateFile,
+        Object.assign({}, this.matchParams, { outputDir: this.outputDir || undefined }),
+        this.abortCtrl.signal
+      ).then(function (data) {
+        self.result = data;
+        self.$emit("match-result", data);
+      }).catch(function (e) {
+        if (!e || e.name !== "AbortError") {
+          self.error = (e && e.message) || "匹配失败";
+        }
+      }).finally(function () {
+        self.loading = false;
+      });
+    },
+    runIfReady: function () {
+      var self = this;
+      if (!this.canRun || this.loading) return Promise.resolve(false);
+      return this.runMatch().then(function () { return true; });
     }
   }
-  if (!bearing && files.length === 1 && !locate) bearing = files[0];
-  if (!locate && files.length >= 2) {
-    locate = files.find((f) => f !== bearing) || null;
-  }
-  if (bearing) bearingFile.value = bearing;
-  if (locate) locateFile.value = locate;
-}
-
-watch(
-  () => props.uploadFiles,
-  (files) => guessFiles(files),
-  { immediate: true, deep: true }
-);
-
-async function runMatch() {
-  if (!canRun.value) return;
-  abortCtrl?.abort();
-  abortCtrl = new AbortController();
-  loading.value = true;
-  error.value = "";
-  result.value = null;
-  try {
-    result.value = await fetchDirectionFindingMatch(
-      bearingFile.value,
-      locateFile.value,
-      { ...matchParams, outputDir: props.outputDir || undefined },
-      abortCtrl.signal
-    );
-    emit("match-result", result.value);
-  } catch (e) {
-    if (e?.name !== "AbortError") {
-      error.value = e?.message || "匹配失败";
-    }
-  } finally {
-    loading.value = false;
-  }
-}
-
-async function runIfReady() {
-  if (!canRun.value || loading.value) return false;
-  await runMatch();
-  return true;
-}
-
-defineExpose({ runIfReady, runMatch });
+};
 </script>
 
 <style scoped>
@@ -275,7 +264,7 @@ defineExpose({ runIfReady, runMatch });
 }
 .panel-desc {
   margin: 0 0 10px;
-  color: #6b7280;
+  color: var(--theme-text-muted);
   font-size: 12px;
 }
 .file-row {
@@ -289,7 +278,7 @@ defineExpose({ runIfReady, runMatch });
   flex-direction: column;
   gap: 4px;
   font-size: 12px;
-  color: #4b5563;
+  color: var(--theme-text-secondary);
   cursor: pointer;
 }
 .file-pick input[type="file"] {
@@ -297,20 +286,20 @@ defineExpose({ runIfReady, runMatch });
   font-size: 11px;
 }
 .file-name {
-  color: #111827;
+  color: var(--theme-text-primary);
   font-weight: 500;
 }
 .match-params {
   margin-bottom: 12px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--theme-border);
   border-radius: 6px;
   padding: 8px 10px;
-  background: #f9fafb;
+  background: var(--theme-bg-deep);
 }
 .match-params summary {
   cursor: pointer;
   font-weight: 600;
-  color: #374151;
+  color: var(--theme-text-secondary);
   margin-bottom: 8px;
 }
 .mode-row {
@@ -324,11 +313,8 @@ defineExpose({ runIfReady, runMatch });
   align-items: center;
   gap: 6px;
   font-size: 13px;
-  color: #374151;
+  color: var(--theme-text-secondary);
   cursor: pointer;
-}
-.mode-opt input {
-  margin: 0;
 }
 .param-grid {
   display: grid;
@@ -341,23 +327,21 @@ defineExpose({ runIfReady, runMatch });
   flex-direction: column;
   gap: 4px;
   font-size: 12px;
-  color: #4b5563;
+  color: var(--theme-text-secondary);
 }
 .param-grid input[type="number"] {
   padding: 6px 8px;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--theme-border-input);
   border-radius: 6px;
+  background: var(--theme-bg-input);
+  color: var(--theme-text-primary);
 }
 .param-grid input[type="number"]:disabled {
-  background: #f3f4f6;
-  color: #9ca3af;
+  background: var(--theme-bg-disabled);
+  color: var(--theme-text-disabled);
 }
 .param-check {
   grid-column: 1 / -1;
-}
-.param-check input[type="checkbox"] {
-  width: auto;
-  margin: 0;
 }
 .check-row {
   display: flex;
@@ -366,16 +350,8 @@ defineExpose({ runIfReady, runMatch });
 }
 .field-hint {
   font-size: 11px;
-  color: #9ca3af;
+  color: var(--theme-text-muted);
   font-weight: normal;
-}
-.text-btn {
-  background: none;
-  border: none;
-  color: #2563eb;
-  cursor: pointer;
-  font-size: 12px;
-  padding: 0;
 }
 .actions {
   display: flex;
@@ -384,48 +360,23 @@ defineExpose({ runIfReady, runMatch });
   gap: 12px;
   margin-bottom: 12px;
 }
-.primary {
-  padding: 8px 16px;
-  background: #1d4ed8;
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 13px;
-}
-.primary:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
 .error {
-  color: #dc2626;
+  color: #ee6666;
   font-size: 12px;
 }
 .result-block {
-  border-top: 1px solid #e5e7eb;
+  border-top: 1px solid var(--theme-border);
   padding-top: 12px;
 }
 .summary {
   margin: 0 0 10px;
-  color: #374151;
+  color: var(--theme-text-secondary);
 }
 .batch-table {
   width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-}
-.batch-table th,
-.batch-table td {
-  border: 1px solid #e5e7eb;
-  padding: 6px 8px;
-  text-align: left;
-}
-.batch-table th {
-  background: #f3f4f6;
-  font-weight: 600;
 }
 .empty {
-  color: #9ca3af;
+  color: var(--theme-text-muted);
   margin: 0;
 }
 </style>

@@ -1,3 +1,4 @@
+<!-- vue2-done -->
 <template>
   <div class="bearing-viz">
     <div class="viz-head">
@@ -10,44 +11,41 @@
       <p class="viz-meta">{{ metaLine }}</p>
 
       <div class="scene-tabs">
-        <button
+        <el-button
           v-for="tab in sceneTabs"
           :key="tab.rank"
-          type="button"
-          class="tab"
-          :class="{ active: tab.rank === activeRank }"
+          size="mini"
+          :type="tab.rank === activeRank ? 'primary' : 'default'"
           @click="selectTab(tab.rank)"
         >
           {{ formatSceneLabel(tab.rank, tab.sceneType, tab) }}
-        </button>
+        </el-button>
       </div>
 
       <div class="panel">
         <div class="panel-title">
-          <strong>{{ currentView?.title || "—" }}</strong>
-          <span v-if="currentView?.freqLabel" class="freq-badge">{{ currentView.freqLabel }}</span>
+          <strong>{{ currentView ? currentView.title : "—" }}</strong>
+          <span v-if="currentView && currentView.freqLabel" class="freq-badge">{{ currentView.freqLabel }}</span>
         </div>
 
-        <div v-if="currentView?.freqGroups?.length > 1" class="freq-summary">
-          <button
-            type="button"
-            class="freq-chip"
-            :class="{ active: !selectedFreqKey }"
+        <div v-if="currentView && currentView.freqGroups && currentView.freqGroups.length > 1" class="freq-summary">
+          <el-button
+            size="mini"
+            :type="!selectedFreqKey ? 'primary' : 'default'"
             @click="selectedFreqKey = ''"
           >
             全部 {{ currentView.freqGroups.length }} 频点（合图）
-          </button>
-          <button
+          </el-button>
+          <el-button
             v-for="g in currentView.freqGroups"
             :key="g.freqKey"
-            type="button"
-            class="freq-chip"
-            :class="{ active: selectedFreqKey === g.freqKey }"
+            size="mini"
+            :type="selectedFreqKey === g.freqKey ? 'primary' : 'default'"
             @click="selectedFreqKey = g.freqKey"
           >
             <strong>{{ g.freqKey }} MHz</strong>
             <span class="chip-meta">{{ g.targetCount }} 目标</span>
-          </button>
+          </el-button>
         </div>
 
         <div
@@ -74,10 +72,10 @@
             :style="{ height: chartHeightPx + 'px' }"
           />
         </div>
-        <p v-if="!loading && currentView && !currentView.targets?.length" class="viz-empty inline">
+        <p v-if="!loading && currentView && !(currentView.targets && currentView.targets.length)" class="viz-empty inline">
           该场景下暂无目标方位数据
         </p>
-        <p v-if="currentView?.timeRange" class="time-foot">{{ currentView.timeRange }}</p>
+        <p v-if="currentView && currentView.timeRange" class="time-foot">{{ currentView.timeRange }}</p>
         <p class="hint">
           默认同一场景内全部频点绘制在一张时间-方位图（颜色区分目标、线型区分频率）；
           可点选单一频点放大查看。轮询场景按目标分色展示各轮 burst 点位或槽位轨迹。
@@ -87,13 +85,12 @@
   </div>
 </template>
 
-<script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+<script>
 import * as echarts from "echarts";
 import {
   analysisViewCacheKey,
   forwardItemsSignature
-} from "../scene/analysisViewCache.js";
+} from "@/scene/analysisViewCache.js";
 import {
   buildCombinedSceneChartOption,
   buildFacetChartOption,
@@ -103,240 +100,224 @@ import {
   getOrLoadSceneAnalysisView,
   applyReportTargetTypes,
   reportRowsSignature
-} from "../scene/analysisBearing.js";
-import { formatSceneLabel } from "../scene/sceneFilters.js";
+} from "@/scene/analysisBearing.js";
+import { formatSceneLabel } from "@/scene/sceneFilters.js";
 
-const props = defineProps({
-  sceneTabs: { type: Array, default: () => [] },
-  activeRank: { type: Number, default: null },
-  forwardItems: { type: Array, default: () => [] },
-  sceneResult: { type: Object, default: null },
-  reportRows: { type: Array, default: () => [] }
-});
-
-const emit = defineEmits(["update:activeRank"]);
-
-const chartEl = ref(null);
-const selectedFreqKey = ref("");
-const loading = ref(false);
-const loadError = ref("");
-const tabViewCache = ref(new Map());
-const freqLineLegend = ref([]);
-let chartInst = null;
-let loadSeq = 0;
-let abortCtrl = null;
-
-function selectTab(rank) {
-  emit("update:activeRank", rank);
-}
-
-const currentTab = computed(() => {
-  const want = Number(props.activeRank);
-  if (!Number.isFinite(want)) return null;
-  return props.sceneTabs.find((t) => Number(t.rank) === want) || null;
-});
-
-function tabCacheKey(tab) {
-  const forwardItem = findForwardItemForRank(props.forwardItems, tab.rank);
-  return forwardItem ? analysisViewCacheKey(forwardItem) : `rank:${tab.rank}`;
-}
-
-const currentView = computed(() => {
-  const tab = currentTab.value;
-  if (!tab) return null;
-  return tabViewCache.value.get(tabCacheKey(tab)) || null;
-});
-
-/** 方位轨迹图数据：轮询场景按分析目标分轨、跨轮连线；跨频关联读 currentView.targets。 */
-const chartView = computed(() => {
-  const v = currentView.value;
-  if (!v) return null;
-  if (v.bearingChart) {
-    return { ...v, ...v.bearingChart, pollingLaneMode: v.pollingLaneMode };
-  }
-  return v;
-});
-
-const displayGroups = computed(() => {
-  const v = chartView.value;
-  if (!v?.freqGroups?.length) return [];
-  if (!selectedFreqKey.value) return v.freqGroups;
-  const g = v.freqGroups.find((x) => x.freqKey === selectedFreqKey.value);
-  return g ? [g] : v.freqGroups;
-});
-
-const metaLine = computed(() => {
-  const v = currentView.value;
-  if (!v) return `${props.sceneTabs.length} 个场景（与上方场景方位轨迹 Tab 一一对应）`;
-  let line = `${props.sceneTabs.length} 个场景 · ${v.freqCount} 个通信网频点 · ${v.targetCount} 个分析目标`;
-  if (v.clusteringMethod === "POSITION_MATCH") {
-    line += " · 编批：位置匹配（异频合批）";
-  }
-  return line;
-});
-
-const chartHeightPx = computed(() => {
-  const v = chartView.value;
-  if (!v?.targets?.length) return 480;
-  if (useCombinedChart.value) {
-    return combinedChartHeight(v.ySpan ?? v.targets);
-  }
-  const n = displayGroups.value.length;
-  return n <= 1
-    ? combinedChartHeight(v.ySpan ?? (displayGroups.value[0]?.targets || v.targets))
-    : facetChartHeight(n);
-});
-
-const useCombinedChart = computed(() => {
-  const v = chartView.value;
-  if (!v?.freqGroups?.length) return false;
-  return !selectedFreqKey.value;
-});
-
-const chartScrollMaxPx = computed(() => {
-  const vh = typeof window !== "undefined" ? window.innerHeight : 800;
-  const cap = useCombinedChart.value ? 0.88 : 0.72;
-  return Math.min(chartHeightPx.value, Math.round(vh * cap));
-});
-
-const sceneByRank = computed(() => {
-  const m = new Map();
-  for (const s of props.sceneResult?.scenes || []) {
-    m.set(s.rank, s);
-  }
-  return m;
-});
-
-watch(
-  () => [
-    forwardItemsSignature(props.forwardItems),
-    props.activeRank,
-    reportRowsSignature(props.reportRows),
-    props.sceneTabs.map((t) => t.rank).join(",")
-  ],
-  () => {
-    selectedFreqKey.value = "";
-    tabViewCache.value = new Map();
-    loadCurrentView();
-  }
-);
-
-watch(selectedFreqKey, async () => {
-  await nextTick();
-  await renderChart();
-});
-
-async function loadCurrentView() {
-  abortCtrl?.abort();
-  const tab = currentTab.value;
-  if (!tab) {
-    disposeChart();
-    return;
-  }
-  if (tabViewCache.value.has(tabCacheKey(tab))) {
-    await renderChart();
-    return;
-  }
-
-  const forwardItem = findForwardItemForRank(props.forwardItems, tab.rank);
-  if (!forwardItem) {
-    loadError.value = "未找到该场景的分析会话";
-    return;
-  }
-
-  const seq = ++loadSeq;
-  loading.value = true;
-  loadError.value = "";
-  abortCtrl = new AbortController();
-  try {
-    const baseView = await getOrLoadSceneAnalysisView(
-      forwardItem,
-      sceneByRank.value.get(tab.rank),
-      abortCtrl.signal
-    );
-    const view = applyReportTargetTypes(baseView, props.reportRows, tab.rank);
-    if (seq !== loadSeq) return;
-    tabViewCache.value = new Map(tabViewCache.value).set(tabCacheKey(tab), view);
-    loading.value = false;
-    await renderChart();
-  } catch (e) {
-    if (e?.name === "AbortError") {
-      if (seq === loadSeq) loading.value = false;
-      return;
+export default {
+  name: "SceneAnalysisBearingViz",
+  props: {
+    sceneTabs: { type: Array, default: function () { return []; } },
+    activeRank: { type: Number, default: null },
+    forwardItems: { type: Array, default: function () { return []; } },
+    sceneResult: { type: Object, default: null },
+    reportRows: { type: Array, default: function () { return []; } }
+  },
+  data: function () {
+    return {
+      selectedFreqKey: "",
+      loading: false,
+      loadError: "",
+      tabViewCache: new Map(),
+      freqLineLegend: [],
+      loadSeq: 0
+    };
+  },
+  computed: {
+    currentTab: function () {
+      var want = Number(this.activeRank);
+      if (!Number.isFinite(want)) return null;
+      return this.sceneTabs.find(function (t) { return Number(t.rank) === want; }) || null;
+    },
+    currentView: function () {
+      var tab = this.currentTab;
+      if (!tab) return null;
+      return this.tabViewCache.get(this.tabCacheKey(tab)) || null;
+    },
+    chartView: function () {
+      var v = this.currentView;
+      if (!v) return null;
+      if (v.bearingChart) {
+        return Object.assign({}, v, v.bearingChart, { pollingLaneMode: v.pollingLaneMode });
+      }
+      return v;
+    },
+    displayGroups: function () {
+      var v = this.chartView;
+      if (!v || !v.freqGroups || !v.freqGroups.length) return [];
+      if (!this.selectedFreqKey) return v.freqGroups;
+      var g = v.freqGroups.find(function (x) { return x.freqKey === this.selectedFreqKey; }.bind(this));
+      return g ? [g] : v.freqGroups;
+    },
+    metaLine: function () {
+      var v = this.currentView;
+      if (!v) return this.sceneTabs.length + " 个场景（与上方场景方位轨迹 Tab 一一对应）";
+      var line = this.sceneTabs.length + " 个场景 · " + v.freqCount + " 个通信网频点 · " + v.targetCount + " 个分析目标";
+      if (v.clusteringMethod === "POSITION_MATCH") {
+        line += " · 编批：位置匹配（异频合批）";
+      }
+      return line;
+    },
+    useCombinedChart: function () {
+      var v = this.chartView;
+      if (!v || !v.freqGroups || !v.freqGroups.length) return false;
+      return !this.selectedFreqKey;
+    },
+    chartHeightPx: function () {
+      var v = this.chartView;
+      if (!v || !v.targets || !v.targets.length) return 480;
+      if (this.useCombinedChart) {
+        return combinedChartHeight(v.ySpan != null ? v.ySpan : v.targets);
+      }
+      var n = this.displayGroups.length;
+      return n <= 1
+        ? combinedChartHeight(v.ySpan != null ? v.ySpan : ((this.displayGroups[0] && this.displayGroups[0].targets) || v.targets))
+        : facetChartHeight(n);
+    },
+    chartScrollMaxPx: function () {
+      var vh = typeof window !== "undefined" ? window.innerHeight : 800;
+      var cap = this.useCombinedChart ? 0.88 : 0.72;
+      return Math.min(this.chartHeightPx, Math.round(vh * cap));
+    },
+    sceneByRank: function () {
+      var m = new Map();
+      var scenes = (this.sceneResult && this.sceneResult.scenes) || [];
+      scenes.forEach(function (s) { m.set(s.rank, s); });
+      return m;
+    },
+    watchSignature: function () {
+      return [
+        forwardItemsSignature(this.forwardItems),
+        this.activeRank,
+        reportRowsSignature(this.reportRows),
+        this.sceneTabs.map(function (t) { return t.rank; }).join(",")
+      ].join("|");
     }
-    if (seq !== loadSeq) return;
-    loadError.value = `加载失败：${e?.message || e}`;
-    loading.value = false;
+  },
+  watch: {
+    watchSignature: function () {
+      this.selectedFreqKey = "";
+      this.tabViewCache = new Map();
+      this.loadCurrentView();
+    },
+    selectedFreqKey: function () {
+      var self = this;
+      this.$nextTick(function () {
+        self.renderChart();
+      });
+    }
+  },
+  mounted: function () {
+    this.loadCurrentView();
+    window.addEventListener("resize", this.onResize);
+  },
+  beforeDestroy: function () {
+    if (this.abortCtrl) this.abortCtrl.abort();
+    window.removeEventListener("resize", this.onResize);
+    this.disposeChart();
+  },
+  methods: {
+    formatSceneLabel: formatSceneLabel,
+    selectTab: function (rank) {
+      this.$emit("update:active-rank", rank);
+    },
+    tabCacheKey: function (tab) {
+      var forwardItem = findForwardItemForRank(this.forwardItems, tab.rank);
+      return forwardItem ? analysisViewCacheKey(forwardItem) : "rank:" + tab.rank;
+    },
+    lineSampleClass: function (lineType) {
+      if (lineType === "dashed") return "dashed";
+      if (lineType === "dotted") return "dotted";
+      return "solid";
+    },
+    loadCurrentView: function () {
+      var self = this;
+      if (this.abortCtrl) this.abortCtrl.abort();
+      var tab = this.currentTab;
+      if (!tab) {
+        this.disposeChart();
+        return;
+      }
+      if (this.tabViewCache.has(this.tabCacheKey(tab))) {
+        this.renderChart();
+        return;
+      }
+      var forwardItem = findForwardItemForRank(this.forwardItems, tab.rank);
+      if (!forwardItem) {
+        this.loadError = "未找到该场景的分析会话";
+        return;
+      }
+      var seq = ++this.loadSeq;
+      this.loading = true;
+      this.loadError = "";
+      this.abortCtrl = new AbortController();
+      getOrLoadSceneAnalysisView(
+        forwardItem,
+        this.sceneByRank.get(tab.rank),
+        this.abortCtrl.signal
+      ).then(function (baseView) {
+        var view = applyReportTargetTypes(baseView, self.reportRows, tab.rank);
+        if (seq !== self.loadSeq) return;
+        var next = new Map(self.tabViewCache);
+        next.set(self.tabCacheKey(tab), view);
+        self.tabViewCache = next;
+        self.loading = false;
+        return self.renderChart();
+      }).catch(function (e) {
+        if (e && e.name === "AbortError") {
+          if (seq === self.loadSeq) self.loading = false;
+          return;
+        }
+        if (seq !== self.loadSeq) return;
+        self.loadError = "加载失败：" + ((e && e.message) || e);
+        self.loading = false;
+      });
+    },
+    renderChart: function () {
+      var self = this;
+      var base = this.currentView;
+      var v = this.chartView;
+      var groups = this.displayGroups;
+      if (!base || !base.targets || !base.targets.length || !v || !v.targets || !v.targets.length || !groups.length) {
+        this.freqLineLegend = [];
+        this.disposeChart();
+        return Promise.resolve();
+      }
+      return new Promise(function (r) { requestAnimationFrame(r); }).then(function () {
+        var el = self.$refs.chartEl;
+        if (!el) return;
+        if (!self.chartInst) self.chartInst = echarts.init(el);
+        if (self.useCombinedChart) {
+          var built = buildCombinedSceneChartOption(v, v.freqGroups);
+          self.freqLineLegend = built.freqLineLegend || [];
+          self.chartInst.setOption(Object.assign({}, built.option, { graphic: [] }), true);
+        } else {
+          self.freqLineLegend = [];
+          self.chartInst.setOption(Object.assign({}, buildFacetChartOption(v, groups), { graphic: [] }), true);
+        }
+        self.chartInst.resize();
+      });
+    },
+    disposeChart: function () {
+      if (this.chartInst) {
+        this.chartInst.dispose();
+        this.chartInst = null;
+      }
+    },
+    onResize: function () {
+      if (this.chartInst) this.chartInst.resize();
+    }
   }
-}
-
-function lineSampleClass(lineType) {
-  if (lineType === "dashed") return "dashed";
-  if (lineType === "dotted") return "dotted";
-  return "solid";
-}
-
-async function renderChart() {
-  const base = currentView.value;
-  const v = chartView.value;
-  const groups = displayGroups.value;
-  if (!base?.targets?.length || !v?.targets?.length || !groups.length) {
-    freqLineLegend.value = [];
-    disposeChart();
-    return;
-  }
-  await new Promise((r) => requestAnimationFrame(r));
-  if (!chartEl.value) return;
-  if (!chartInst) chartInst = echarts.init(chartEl.value);
-  if (useCombinedChart.value) {
-    const built = buildCombinedSceneChartOption(v, v.freqGroups);
-    freqLineLegend.value = built.freqLineLegend || [];
-    chartInst.setOption({ ...built.option, graphic: [] }, true);
-  } else {
-    freqLineLegend.value = [];
-    chartInst.setOption({ ...buildFacetChartOption(v, groups), graphic: [] }, true);
-  }
-  chartInst.resize();
-}
-
-function disposeChart() {
-  chartInst?.dispose();
-  chartInst = null;
-}
-
-function onResize() {
-  chartInst?.resize();
-}
-
-onMounted(() => {
-  loadCurrentView();
-  window.addEventListener("resize", onResize);
-});
-
-onBeforeUnmount(() => {
-  abortCtrl?.abort();
-  window.removeEventListener("resize", onResize);
-  disposeChart();
-});
+};
 </script>
 
 <style scoped>
-.bearing-viz { margin-top: 14px; padding-top: 14px; border-top: 1px solid #e5e7eb; }
-.viz-head h4 { margin: 0 0 6px; font-size: 14px; }
-.viz-meta { font-size: 12px; color: #6b7280; margin: 0 0 8px; }
+.bearing-viz { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--theme-border); }
+.viz-head h4 { margin: 0 0 6px; font-size: 14px; color: var(--theme-text-primary); }
+.viz-meta { font-size: 12px; color: var(--theme-text-muted); margin: 0 0 8px; }
 .scene-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
-.tab {
-  border: 1px solid #d1d5db;
-  background: #fff;
-  padding: 4px 10px;
-  border-radius: 6px;
-  font-size: 12px;
-  cursor: pointer;
-}
-.tab.active { border-color: #7c3aed; color: #6d28d9; font-weight: 600; background: #f5f3ff; }
 .panel {
-  background: #fff;
-  border: 1px solid #d1d5db;
+  background: var(--theme-bg-panel);
+  border: 1px solid var(--theme-border);
   border-radius: 8px;
   padding: 10px 12px 12px;
 }
@@ -348,24 +329,10 @@ onBeforeUnmount(() => {
   margin-bottom: 6px;
   font-size: 12px;
 }
-.panel-title strong { font-size: 13px; color: #111827; }
-.freq-badge { color: #1d4ed8; font-weight: 600; }
+.panel-title strong { font-size: 13px; color: var(--theme-text-primary); }
+.freq-badge { color: var(--theme-text-accent); font-weight: 600; }
 .freq-summary { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
-.freq-chip {
-  padding: 4px 10px;
-  border-radius: 6px;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
-  font-size: 12px;
-  cursor: pointer;
-  font-family: inherit;
-}
-.freq-chip.active {
-  background: #dbeafe;
-  border-color: #2563eb;
-  box-shadow: inset 0 0 0 1px #2563eb;
-}
-.chip-meta { color: #6b7280; font-size: 11px; margin-left: 4px; }
+.chip-meta { color: var(--theme-text-muted); font-size: 11px; margin-left: 4px; }
 .encoding-row {
   display: flex;
   flex-wrap: wrap;
@@ -374,37 +341,38 @@ onBeforeUnmount(() => {
   margin-bottom: 8px;
   font-size: 11px;
 }
-.encoding-label { color: #6b7280; font-weight: 600; }
+.encoding-label { color: var(--theme-text-muted); font-weight: 600; }
 .line-legend-chip {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   padding: 2px 8px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--theme-border);
   border-radius: 12px;
-  background: #f9fafb;
+  background: var(--theme-bg-deep);
   font-size: 11px;
+  color: var(--theme-text-secondary);
 }
-.line-sample { width: 22px; border-top: 2px solid #374151; }
+.line-sample { width: 22px; border-top: 2px solid var(--theme-text-secondary); }
 .line-sample.dashed { border-top-style: dashed; }
 .line-sample.dotted { border-top-style: dotted; }
 .chart-scroll {
   overflow-y: auto;
   overflow-x: hidden;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--theme-border);
   border-radius: 6px;
-  background: #fafafa;
+  background: var(--theme-bg-deep);
 }
 .chart-box { width: 100%; min-height: 320px; }
-.time-foot { text-align: right; font-size: 11px; color: #6b7280; }
-.hint { font-size: 11px; color: #6b7280; margin: 8px 0 0; }
+.time-foot { text-align: right; font-size: 11px; color: var(--theme-text-muted); }
+.hint { font-size: 11px; color: var(--theme-text-muted); margin: 8px 0 0; }
 .load-hint, .load-error { font-size: 12px; }
-.load-error { color: #b91c1c; }
+.load-error { color: #ee6666; }
 .viz-empty {
   padding: 24px;
   text-align: center;
-  color: #9ca3af;
-  background: #f9fafb;
+  color: var(--theme-text-muted);
+  background: var(--theme-bg-deep);
   border-radius: 8px;
 }
 .viz-empty.inline { padding: 16px; }
